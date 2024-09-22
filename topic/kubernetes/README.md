@@ -2,8 +2,7 @@
 
 - [Kubernetes](#kubernetes)
   - [说明](#说明)
-    - [Basics](#basics)
-  - [Datadog Agent](#datadog-agent)
+
 
 ## 说明
 
