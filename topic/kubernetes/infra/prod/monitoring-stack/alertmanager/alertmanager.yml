@@ -1,0 +1,35 @@
+apiVersion: monitoring.coreos.com/v1
+kind: Alertmanager
+metadata:
+  annotations:
+    meta.helm.sh/release-name: prometheus
+    meta.helm.sh/release-namespace: monitoring
+  creationTimestamp: "2024-06-11T05:47:56Z"
+  generation: 2
+  labels:
+    app: kube-prometheus-stack-alertmanager
+    app.kubernetes.io/instance: prometheus
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: kube-prometheus-stack
+    app.kubernetes.io/version: 60.0.2
+    chart: kube-prometheus-stack-60.0.2
+    heritage: Helm
+    release: prometheus
+  name: prometheus-kube-prometheus-alertmanager
+  namespace: monitoring
+spec:
+  alertmanagerConfigNamespaceSelector: {}
+  alertmanagerConfigSelector:
+    matchLabels:
+      alertmanagerConfig: example
+  automountServiceAccountToken: true
+  externalUrl: http://prometheus-kube-prometheus-alertmanager.monitoring:9093
+  image: quay.io/prometheus/alertmanager:v0.27.0
+  listenLocal: false
+  logFormat: logfmt
+  logLevel: info
+  paused: false
+  portName: http-web
+  replicas: 1
+  retention: 120h
+  routePrefix: /

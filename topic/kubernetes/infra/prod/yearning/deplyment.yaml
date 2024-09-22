@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: yearning
+  name: yearning
+  namespace: infra
+spec: 
+  replicas: 2
+  selector:
+    matchLabels:
+      app: yearning
+  template:
+    metadata:
+      labels:
+        app: yearning
+    spec:
+      containers:
+      - image: yeelabs/yearning:v3.1.8
+        name: yearning
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: TZ
+            value: Asia/Shanghai
+          #- name: MYSQL_ADDR
+          #  valueFrom:
+          #    secretKeyRef: # 存储的变量信息
+          #      name: yearning-conf
+          #      key: addr
+          #- name: MYSQL_USER
+          #  valueFrom:
+          #    secretKeyRef:
+          #      name: yearning-conf
+          #      key: user
+          #- name: MYSQL_PASSWORD
+          #  valueFrom:
+          #    secretKeyRef:
+          #      name: yearning-conf
+          #      key: pass
+          #- name: MYSQL_DB
+          #  valueFrom:
+          #    secretKeyRef:
+          #      name: yearning-conf
+          #      key: data
+          #- name: SECRET_KEY
+          #  valueFrom:
+          #    secretKeyRef:
+          #      name: yearning-conf
+          #      key: sk
+          #- name: IS_DOCKER
+          #  value: is_docker
+        command: ["sh"]
+        args: ["-c", "/opt/Yearning install && /opt/Yearning run"]
+        ports:
+          - containerPort: 8000
+            name: web
+            protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /
+            port: web
+            scheme: HTTP
+          initialDelaySeconds: 25
+          periodSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /
+            port: web
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 2
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 1
+            memory: 2Gi
+        volumeMounts:
+        - mountPath: /opt/conf.toml
+          name: config
+          subPath: conf.toml
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: yearning-conf
+        name: config

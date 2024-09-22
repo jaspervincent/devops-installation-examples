@@ -1,0 +1,9 @@
+#!/bin/bash
+: ${namespace:=$(podnamespace|awk '/Namespace: /{print $2}')}
+app_name=$1
+
+# kubectl -n ${namespace} get pods -o wide|grep ${app_name}
+[ -z "${app_name}" ] && kubectl -n ${namespace} get pods -o wide || { 
+pods=$(kubectl -n ${namespace} get pods -o wide|grep ${app_name}|awk '{printf("%-4d%s\t%s\t%s\t%s\t%s\t%s\n", NR, $1, $2, $3, $5, $6, $7)}')
+echo "${pods}"
+}

@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-exporter-log
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-exporter-log
+  template:
+    metadata:
+      annotations:
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "9308"
+        prometheus.io/scrape: "true"
+      labels:
+        app: kafka-exporter-log
+    spec:
+      #imagePullSecrets:
+      #- name: docker-secret
+      #nodeSelector:
+      #  eks.amazonaws.com/nodegroup: EKS-Devops-Monitoring
+      containers:
+      - name: kafka-exporter
+        image: danielqsj/kafka-exporter:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9308
+        command:
+        - /bin/sh
+        - -c
+        - 'kafka_exporter --kafka.server=b-1.amazonaws.com:9092  --kafka.server=b-3.amazonaws.com:9092  --kafka.server=b-2.amazonaws.com:9092'
+        readinessProbe:
+          tcpSocket:
+            port: 9308
+          initialDelaySeconds: 5
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 200m
+            memory: 10Mi
+

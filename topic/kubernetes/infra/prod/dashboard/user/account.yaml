@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-readonly
+  namespace: kube-system
+#secrets:
+#- name: cluster-readonly
+---
+#手动为 ServiceAccount 创建长期有效的 API 令牌
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cluster-readonly
+  namespace: kube-system
+  annotations:
+    kubernetes.io/service-account.name: "cluster-readonly"
+type: kubernetes.io/service-account-token

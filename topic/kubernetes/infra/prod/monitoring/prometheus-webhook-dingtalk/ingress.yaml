@@ -1,0 +1,20 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dingtalk-ingress-nginx
+  namespace: monitoring
+  annotations:
+    nginx.ingress.kubernetes.io/service-weight: ""
+    kubernetes.io/ingress.class: nginx-prod
+spec:
+  rules:
+  - host: kubedingtalk.cici.com
+    http:
+      paths:
+      - path: /
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: prometheus-webhook-dingtalk
+            port:
+              number: 80

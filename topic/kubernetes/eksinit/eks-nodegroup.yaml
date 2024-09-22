@@ -1,0 +1,36 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: prod-esk
+  region: af-south-1
+  version: "1.30"
+
+managedNodeGroups:
+  - name: managed-ng-1
+    #instanceType: r6g.xlarge
+    minSize: 0
+    desiredCapacity: 0
+    maxSize: 2
+    launchTemplate:
+      id: lt-0a9131b2c42aa4d13
+      version: "4"
+    iam:
+      instanceRoleARN: "arn:aws:iam::<ACCOUNT_ID>:role/AmazonEKSNodeRole"
+    #maxPodsPerNode: 110
+    #securityGroups:
+    #  attachIDs: ["sg-04d4420337bd989f1"]
+    subnets:
+      - subnet-0a50039e33a41b566
+      - subnet-06d2e2a18bbbb649b
+    #ssh: # use existing EC2 key
+    #  allow: true
+    #  publicKeyName: OPS
+    labels:
+      role: worker
+    tags:
+      nodegroup-role: worker
+      Name: managed-ng
+      Environment: Production
+      Usage: EKS
+      Application: Platform
+    privateNetworking: true

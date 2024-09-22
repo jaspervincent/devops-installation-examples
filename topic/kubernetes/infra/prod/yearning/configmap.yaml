@@ -1,0 +1,33 @@
+apiVersion: v1
+data:
+  conf.toml: |
+    [Mysql]
+    Db = "yearning"
+    Host = "texxx.rds.amazonaws.com"
+    Port = "3306"
+    User = "yearning"
+    Password = "yearning@!123"
+
+
+    [General] #数据库加解密key，只可更改一次
+    SecretKey = "JHcrCBRuCWey2dI6"
+    Hours = 4
+    Lang = "zh_CN" #en_US,zh_CN 中文界面
+
+    [Oidc]
+    Enable = false
+    ClientId = "yearning"
+    ClientSecret = "fefehelj23jlj22f3jfjdfd"
+    Scope = "openid profile"
+    AuthUrl = "https://keycloak.xxx.ca/auth/realms/master/protocol/openid-connect/auth"
+    TokenUrl = "https://keycloak.xxx.ca/auth/realms/master/protocol/openid-connect/token"
+    UserUrl = "https://keycloak.xxx.ca/auth/realms/master/protocol/openid-connect/userinfo"
+    RedirectUrL = "http://127.0.0.1:8000/oidc/_token-login"
+    UserNameKey = "preferred_username"
+    RealNameKey = "name"
+    EmailKey = "email"
+kind: ConfigMap
+metadata:
+  creationTimestamp: null
+  name: yearning-conf
+  namespace: infra

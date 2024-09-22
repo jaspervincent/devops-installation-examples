@@ -1,0 +1,8 @@
+kubectl apply -f cloudwatch-exporter.yaml
+
+# Update
+#config.yml
+kubectl -n monitoring create cm cloudwatch-prometheus-cloudwatch-exporter --from-file=config.yml  --dry-run -oyaml|kubectl replace -f -
+#
+# Example check metrics
+#aws cloudwatch list-metrics --namespace "AWS/ES"

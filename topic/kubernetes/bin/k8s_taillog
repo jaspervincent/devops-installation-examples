@@ -1,0 +1,242 @@
+#!/bin/bash
+#
+# read 中允许退格键删除字符
+stty erase ^H
+server=$2
+temp_list="/tmp/kube_po_${RANDOM}.list"
+title="/tmp/k8s_title"
+config_prod='--kubeconfig=/root/.kube/config_prod'
+config_dev='--kubeconfig=/root/.kube/config_dev'
+if echo $1|grep -iq 'prod';then
+   config="-n default $config_prod"
+elif echo $1|grep -iq 'dev';then
+   config="$config_dev"
+else
+
+    echo -en "\e[31;1mERROR 不正确的参数\e[0m\n\n\e[1m环境参数\e[32m（必选项） \e[0m\n"
+    echo -en "\E[$[RANDOM%7+31];1m"
+    cat <<EOF
+prod: 正式环境
+dev:  开发环境
+stag: qa测试环境
+EOF
+    echo -en '\E[0m'
+ 
+    echo -en "\E[$[RANDOM%7+31];1m"
+    cat <<EOF
+match 匹配服务名称,支持模糊匹配（可选项）
+
+Usage: $0 prod [match]
+EOF
+    echo -en '\E[0m'
+   exit 1
+fi
+print_help(){
+   echo -e "
+   \e[32;1mUsage:\e[0m
+    \e[36;1mCheck\e[0m
+    1. \e[32;1m<num bash>\e[0m         数字后加空格bash进入容器,比如 <1 bash>
+    ------------------------------------------------------------------------------------
+    2. \e[32;1m<num> [line_num]\e[0m   直接输入对应数字回车实时输出最后200行日志,也可以指定行数line_num
+    ------------------------------------------------------------------------------------
+    3. \e[32;1m<num des>\e[0m           数字加des查看pod详细信息,比如<1 des>
+    ------------------------------------------------------------------------------------
+    4. \e[32;1m<num MATCH>\e[0m        数字加空格单词进行日志匹配,比如 <1 ERROR> 如果匹配数字需要在匹配
+                          的数字两边加上中括号以避免和查看日志行数冲突，比如： <1 [12345]>
+    ------------------------------------------------------------------------------------
+    5. \e[32;1m<num1,num2 [MATCH]>\e[0m              数字用,分隔可以实时查看多个容器的聚合日志
+                                        比如 1,2,3 查看1 2 3 三个容器的聚合日志
+                                        第二个参数是可选参数:可以搜索匹配的日志 
+    ------------------------------------------------------------------------------------
+    6. \e[32;1m<num_start..num_end [MATCH]>\e[0m     数字用..分隔可以实时查看开始到结尾多个容器的聚合日志
+                                        比如 1..4 查看1到4四个容器的聚合日志
+                                        第二个参数是可选参数:可以搜索匹配的日志 
+    ------------------------------------------------------------------------------------
+
+    \e[36;1mModify\e[0m
+    1. \e[32;1m<num cp>\e[0m            数字加空格cp复制文件或者目录,比如 <1 cp>
+    ------------------------------------------------------------------------------------
+    2. \e[32;1m<num update>\e[0m        数字加update,更新镜像版本，用于更新或者回滚
+    ------------------------------------------------------------------------------------
+    3. \e[32;1m<num scale>\e[0m         数字加scale，伸缩服务数量，设置为0停止服务
+                           对于已经设置为0的服务需要输入  0 scale 再进行更改
+    ------------------------------------------------------------------------------------
+    4. \e[32;1m<num restart all>\e[0m  重启指定容器相关的所有容器，滚动重启不影响服务
+    ------------------------------------------------------------------------------------
+    5. \e[32;1m<num restart>\e[0m      数字加空格restart重启服务,比如 <1 restart>
+                          数字加空格restart force强制删除服务，比如<1 restart force> 一般长
+                          时间处于Terminal状态或者无法重启时使用
+    ------------------------------------------------------------------------------------
+
+    \e[36;1mHelp\e[0m
+    1. \e[32;1m<r>\e[0m                输入r刷新当前列表\e[0m
+    ------------------------------------------------------------------------------------
+    2. \e[32;1m<help>\e[0m             输入help查看帮助信息\e[0m
+    ------------------------------------------------------------------------------------
+    3. \e[32;1m<exit|quit>\e[0m        退出\e[0m
+    ------------------------------------------------------------------------------------
+    4. \e[32;1m<num:num [MATCH]>\e[0m  如果有多个容器，冒号后的数字是指定容器
+    ------------------------------------------------------------------------------------
+   "
+}
+print_list(){
+   echo -e '服务\t数量\t状态\t重启次数\t创建时间\t容器IP\t宿主机' > $title
+   kubectl $config get po -o wide|grep -vP '^elastic|NAME'|grep -P "$server" > $temp_list
+   sep=$(printf "%140s\n"|tr ' ' '=')
+   cat -n $title $temp_list|awk '{$1--;print $0}' |column -t -o '| '|awk -F'|' 'BEGIN{OFS=" | "}{print $1,"\033[34;1m"$2"\033[0m",$3,$4,$5,$6,$7,$8}'|sed "1a${sep}"
+   echo "$sep"
+   echo -e "\e[1mTips: 脚本参数可直接输出匹配的服务名称\n\t$0 [match]\e[0m"
+   read -p "输入编号查看日志(输入help打印帮助): " num;echo -e "\e[0m"
+   
+   #帮忙与退出
+   if echo $num|grep -qiP '^\s*help\s*$';then
+      print_help
+      read -p "输入编号查看日志: " num;echo -e "\e[0m"
+   fi
+    
+   if echo $num|grep -qiP 'exit|quit';then exit 0;fi
+
+   #多容器
+   if echo $num|grep -qiP '^\d+:\d+.*$';then
+      operation=$(echo $num|awk '{print $2}')
+      container_num=$(echo $num|awk -F':|[[:space:]]+' '{print $2}')
+      num="$(echo $num|awk -F: '{print $1}') ${operation}"
+   fi
+  
+   ##查看 
+   #进容器: <num bash> 数字后加空格bash进入容器,比如 <1 bash>
+   if echo $num|grep -qiP '\d+\s+bash';then
+      cs=`sed -n "$(echo $num|awk '{print $1}')p" $temp_list|awk '{print $1}'`
+      if [ ! -z $container_num ];then
+#         [[ $cs =~ (^.*)-[^-]+-[^-]+$ ]]
+         ((container_num--))
+         container_name=$(kubectl get po $cs -o jsonpath="{.spec.containers[$container_num].name}")
+         container_cmd="-c $container_name"
+      fi
+      echo -e "\e[33;1m=== 进入容器 $cs 输入命令exit退出 ====\n\e[0m"
+      kubectl $config exec -it $cs ${container_cmd} -- bash  2>/dev/null || kubectl $config exec -it $cs ${container_cmd} -- sh
+      exit 0
+
+   #服务日志: <num> [line_num] 直接输入对应数字回车实时输出最后200行日志,也可以指定行数line_num
+   elif echo $num|grep -qP '^\d+$';then
+      cs=`sed -n "${num}p" $temp_list|awk '{print $1}'`
+      if [ ! -z $container_num ];then
+         #[[ $cs =~ (^.*)-[^-]+-[^-]+$ ]]
+         #container_cmd="-c ${BASH_REMATCH[1]}${container_suffix}"
+         ((container_num--))
+         container_name=$(kubectl $config get po $cs -o jsonpath="{.spec.containers[$container_num].name}")
+         container_cmd="-c $container_name"
+      fi
+      kubectl $config logs -f --tail=1000 $cs ${container_cmd}
+
+   elif echo $num|grep -qP '^\d+\s+\d+$';then
+      cs=`sed -n "$(echo $num|awk '{print $1}')p" $temp_list|awk '{print $1}'`
+      if [ ! -z $container_num ];then
+         #[[ $cs =~ (^.*)-[^-]+-[^-]+$ ]]
+         #container_cmd="-c ${BASH_REMATCH[1]}${container_suffix}"
+         ((container_num--))
+         container_name=$(kubectl get po $cs -o jsonpath="{.spec.containers[$container_num].name}")
+         container_cmd="-c $container_name"
+      fi
+       line=`echo $num|awk '{print $2}'`
+       kubectl $config logs -f --tail=$line $cs ${container_cmd}
+
+   #pod详情: <num des> 数字加des查看pod详细信息,比如<1 des>
+   elif echo $num|grep -qP '^\d+\s+des$';then
+           match=`echo $num|sed -rn 's/^[0-9]+[[:space:]]+//p'`
+           num=`echo $num|awk '{print $1}'`
+           cs=`sed -n "${num}p" $temp_list|awk '{print $1}'`
+           kubectl $config describe po $cs
+
+   #日志匹配: <num MATCH> 数字加空格单词进行日志匹配,比如 <1 ERROR>, 匹配数字需要将数字括起来 <1 [12345]>
+   elif echo $num|grep -qP '^\d+\s+.+$';then
+      match=`echo $num|sed -rn 's/^[0-9]+[[:space:]]+//p'`
+      if echo $match|grep -qP '\[\d+\]';then match=$(echo $match|sed -nr 's/\[([0-9]+)\]/\1/p');fi
+      num=`echo $num|awk '{print $1}'`
+      cs=`sed -n "${num}p" $temp_list|awk '{print $1}'`
+      kubectl $config logs -f --tail=200 $cs|grep --color -iP "$match"
+   #多容器聚合日志: <num1,num2 [MATCH]> 比如 1,3,5 查看1 3 5 三个容器的聚合日志
+   elif echo $num|grep -qP '^\d+,\d+';then
+      awk_re=`echo $num|awk '{print $1}'|awk -F: '{gsub(/,/,"||NR==");print "NR=="$0}'`
+      match=`echo $num|awk '{print $2}'`
+      cs=`awk '{if('''$awk_re''')print $1}' $temp_list`
+      stern $config ${cs//[[:space:]]/|} --tail 1000 --include "$match"
+   #多个容器的聚合日志: <num_start..num_end [MATCH]> 比如 1..4 查看1到4四个容器的聚合日志
+   elif echo $num|grep -qP '^\d+..\d+';then
+       num_list=`echo $num|awk '{print $1}'`
+       awk_re=`eval echo {$num_list}|awk '{gsub(/ /,"||NR==");print "NR=="$0}'`
+       match=`echo $num|awk '{print $2}'`
+       cs=`awk '{if('''$awk_re''')print $1}' $temp_list`
+       stern $config ${cs//[[:space:]]/|} --tail 1000 --include "$match"
+
+   ##修改
+   #更新镜像: <num update> 数字加update,更新镜像版本，用于更新或者回滚
+   elif echo $num|grep -qiP '\d+\s+update';then
+      cs=`sed -n "$(echo $num|awk '{print $1}')p" $temp_list|awk '{print $1}'|sed -n -r 's/^(.*)-[^-]+-[^-]+$/\1/p'`
+      iver=`kubectl $config describe deploy $cs|awk -F: '/Image:/{print $NF}'`
+      image=`kubectl $config describe deploy $cs|awk -F'[ |:]' '/Image:/{print $(NF-1)}'`
+      echo -e "\e[33;1m===  $cs 当前版本为 [$iver] ====\n\e[0m"
+      read -p '输入新的版本号(数字或者latest,默认为latest)：' nver
+      kubectl $config set image deployment/$cs ${cs}=${image}:${nver:=latest}
+      echo -e "\e[33;1m\t已设置 $cs 镜像版本为\n===  ${image}:$nver  ====\n\e[0m"
+
+   #复制文件: <num cp> 数字加空格cp复制文件或者目录,比如 <1 cp>
+   elif echo $num|grep -qiP '\d+\s+cp';then
+      copydir=$RANDOM
+      mkdir /tmp/$copydir
+      cs=`sed -n "$(echo $num|awk '{print $1}')p" $temp_list|awk '{print $1}'`
+      read -p '输入要复制的目录或者文件（绝对路径）：' copyfile
+      kubectl $config cp ${cs}:$copyfile /tmp/$copydir/$(basename $copyfile) 2>/dev/null && echo -e "文件已经复制到/tmp/$copydir"
+
+   #服务伸缩: <num scale> 数字表示选定要伸缩的服务，如<1 scale>，自定义伸缩的服务 <0 scale>
+   elif echo $num|grep -qiP '\d+\s+scale$';then
+      if [ $(echo $num|awk '{print $1}') == 0 ];then
+          echo -e "\e[1m--- 以下服务数量为0 ---"
+          kubectl $config get deploy|awk -F' +|/' '$3==0{print $1}'
+          read -p '输入对应服务名称：' deploy
+      else
+          cs=`sed -n "$(echo $num|awk '{print $1}')p" $temp_list|awk '{print $1}'`
+          deploy=$(echo $cs|sed -nr 's/-[^-]+-[^-]+$//p')
+      fi
+      c_num=$(kubectl $config get deploy $deploy|sed -n '2p'|awk -F' +|/' '{print $3}')
+      read -p "当前选择 $deploy 服务，输入要伸缩的服务数量[当前数量为 $c_num ]：" scale_num
+#      expr $scale_num + 0 >/dev/null 2>&1
+      echo $scale_num|grep -P '^\d+$' >/dev/null
+      if [ $? -ne 0 ];then
+          echo -e "\e[31;1mError：必须输入一个整数！\e[0m";exit 1
+      else
+          echo -e "\e[1m正在伸缩 ${deploy} 数量为 $scale_num ...\e[0m";sleep 1
+          kubectl $config scale deploy ${deploy} --replicas=$scale_num
+      fi
+   
+   #重启指定相关所有服务
+   elif echo $num|grep -qiP '\d+\s+restart\s+all';then
+      cs=`sed -n "$(echo $num|awk '{print $1}')p" $temp_list|awk '{print $1}'|sed -n -r 's/^(.*)-[^-]+-[^-]+$/\1/p'`
+      kubectl $config rollout restart deploy $cs
+      echo -e "\e[33;1m===  正在重启所有$cs容器  ====\n\e[0m"
+
+   #重启服务: <num restart> 数字加空格restart重启服务,比如 <1 restart> 强制删除服务如<1 restart force>
+   elif echo $num|grep -qiP '\d+\s+restart\s+force';then
+      cs=`sed -n "$(echo $num|awk '{print $1}')p" $temp_list|awk '{print $1}'`
+      echo -e "\e[33;1m=== 正在强制重启容器 $cs  ====\n\e[0m"
+      kubectl $config delete pod $cs --force --grace-period=0
+      echo -e "\e[33;1m=== 强制重启完毕  ====\n\e[0m"
+      exit 0
+   elif echo $num|grep -qiP '\d+\s+restart$';then
+      cs=`sed -n "$(echo $num|awk '{print $1}')p" $temp_list|awk '{print $1}'`
+      echo -e "\e[33;1m=== 正在重启容器 $cs  ====\n\e[0m"
+      kubectl $config delete pod $cs
+      echo -e "\e[33;1m=== 重启完毕  ====\n\e[0m"
+      exit 0
+
+   ##其他 
+   #刷新当前列表
+   elif echo $num|grep -qP '^reload$|^r$';then
+      print_list
+   else
+      echo -e "\e[32;1mERROR: Not a Correct Command !!!\e[0m"
+      exit 1
+   fi
+}
+print_list
+

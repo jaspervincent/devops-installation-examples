@@ -1,0 +1,23 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: business-rules
+  namespace: monitoring
+  labels:
+    role: alert-rules
+    release: prometheus
+spec:
+  groups:
+#rocketmq
+  - name: Infra-RocketMQ
+    rules:
+    - alert: nfra_RocketMQ_Producer_Tps_High
+      annotations:
+        description: 'warning | RocketMQ_Producer_Tps greater than 2000, this value is {{ $value | printf "%.2f" }}. | [Duration Time: 3m]'
+        summary: '[RC] {{$labels.job}} cluster send tps too high'
+      expr: sum(rocketmq_producer_tps) by (job,cluster) > 2000
+      for: 3m
+      labels:
+        severity: warning
+        team: ciciname

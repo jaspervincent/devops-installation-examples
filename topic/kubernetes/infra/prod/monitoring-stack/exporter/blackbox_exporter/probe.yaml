@@ -1,0 +1,84 @@
+kind: Probe
+apiVersion: monitoring.coreos.com/v1
+metadata:
+  labels:
+    release: prometheus
+  name: blackbox-tcp
+  namespace: monitoring
+spec:
+  interval: 60s
+  module: tcp_connect
+  prober:
+    url: blackbox-exporter.monitoring.svc.cluster.local:19115
+  targets:
+    staticConfig:
+      static:
+      - kube-dns.kube-system:53
+---
+kind: Probe
+apiVersion: monitoring.coreos.com/v1
+metadata:
+  name: domain-certificate
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  interval: 10s
+  scrapeTimeout: 5s
+  module: http_2xx #配置get请求检测
+  prober:
+    url: blackbox-exporter.monitoring.svc.cluster.local:19115
+  targets:
+    staticConfig:
+      static:
+      - https://cici.com
+      labels:
+        product_line: ciciname
+        severity: info
+  metricRelabelings:
+#  - sourceLabels: [__address__]
+#    targetLabel: __param_target
+#  - sourceLabels: [__param_target]
+#    targetLabel: instance
+#  - targetLabel: __address__
+#    replacement: prom-blackbox-exporter:9115  #blackbox-exporter 所在的机器和端口
+  - sourceLabels:
+    - instance
+    regex: https://(prometheus-operator.dev|.*\.cici.com)([\.\_\-/a-zA-Z0-9]*)?(.*)
+    replacement: "${2}"
+    targetLabel: path
+
+---
+#站点监控
+kind: Probe
+apiVersion: monitoring.coreos.com/v1
+metadata:
+  name: domain-url
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  interval: 10s
+  scrapeTimeout: 5s
+  module: http_2xx #配置get请求检测
+  prober:
+    url: blackbox-exporter.monitoring.svc.cluster.local:19115
+  targets:
+    staticConfig:
+      static:
+      - https://cici.com
+      labels:
+        product_line: ciciname
+        severity: info
+  metricRelabelings:
+#  - sourceLabels: [__address__]
+#    targetLabel: __param_target
+#  - sourceLabels: [__param_target]
+#    targetLabel: instance
+#  - targetLabel: __address__
+#    replacement: prom-blackbox-exporter:9115  #blackbox-exporter 所在的机器和端口
+  - sourceLabels:
+    - instance
+    regex: https://(prometheus-operator.dev|.*\.cici.com)([\.\_\-/a-zA-Z0-9]*)?(.*)
+    replacement: "${2}"
+    targetLabel: path

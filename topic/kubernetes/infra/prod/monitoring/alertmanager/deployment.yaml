@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      name: alertmanager
+      labels:
+        app: alertmanager
+    spec:
+      #nodeSelector:
+      #  type: prometheus
+      containers:
+      - name: alertmanager
+        image: prom/alertmanager:v0.27.0
+        args:
+          - --config.file=/etc/alertmanager/config.yml
+          - --cluster.advertise-address=0.0.0.0:9093
+          - --storage.path=/alertmanager/data
+          - --data.retention=240h
+          - --web.route-prefix=/
+          - --web.external-url=https://kubealertmanager.cici.com
+        ports:
+        - containerPort: 9093
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9093
+          initialDelaySeconds: 3
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 10
+          successThreshold: 1
+        resources:
+          limits:
+            cpu: "1"
+            memory: 1Gi
+          requests:
+            cpu: 10m
+            memory: 50Mi
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/alertmanager
+        - name: alertmanager
+          mountPath: /alertmanager/data
+      - args:
+        - --webhook-url=http://localhost:9093/-/reload
+        - --volume-dir=/etc/alertmanager/
+        image: jimmidyson/configmap-reload:v0.9.0
+        name: module-configmap-reloader
+        resources:
+          limits:
+            cpu: 20m
+            memory: 40Mi
+          requests:
+            cpu: 10m
+            memory: 20Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+        volumeMounts:
+        - mountPath: /etc/alertmanager/
+          name: config-volume
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: alertmanager-config
+      - name: alertmanager
+        emptyDir: {}
+

@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-webhook-dingtalk
+  namespace: monitoring
+  labels:
+    app: prometheus-webhook-dingtalk
+spec:
+  ports:
+  - name: http
+    protocol: TCP
+    port: 8060
+    targetPort: 8060
+  - name: http-80
+    protocol: TCP
+    port: 80
+    targetPort: 80
+  selector:
+    app: prometheus-webhook-dingtalk

@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: prometheus-webhook-dingtalk
+  name: prometheus-webhook-dingtalk
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-webhook-dingtalk
+  template:
+    metadata:
+      labels:
+        app: prometheus-webhook-dingtalk
+    spec:
+      nodeSelector:
+        type: pfgc-ops-prod-prometheus
+      containers:
+      - args:
+        - --web.listen-address=:8060
+        - --config.file=/config/config.yml
+        - --web.enable-ui
+        - --web.enable-lifecycle
+        image: timonwong/prometheus-webhook-dingtalk:v2.1.0
+        imagePullPolicy: IfNotPresent
+        name: prometheus-webhook-dingtalk
+        ports:
+        - containerPort: 8060
+          name: http
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 1
+            memory: 512Mi
+          requests:
+            cpu: 10m
+            memory: 50Mi
+        volumeMounts:
+        - mountPath: /config
+          name: conf
+      - args:
+        - --webhook-url=http://localhost:8060/-/reload
+        - --volume-dir=/config/
+        image: jimmidyson/configmap-reload:v0.9.0
+        name: module-configmap-reloader
+        resources:
+          limits:
+            cpu: 20m
+            memory: 40Mi
+          requests:
+            cpu: 10m
+            memory: 20Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+        volumeMounts:
+        - mountPath: /config/
+          name: conf
+          readOnly: true
+      - image: axistools/nginx-ldap:1.23.2-alpine
+        imagePullPolicy: Always
+        name: nginx-ldap
+        resources:
+          limits:
+            cpu: 200m
+            memory: 200Mi
+          requests:
+            cpu: 10m
+            memory: 10Mi
+        stdin: true
+        tty: true
+        volumeMounts:
+        - mountPath: /etc/nginx/nginx.conf
+          name: nginx-conf
+          subPath: nginx.conf
+        - mountPath: /etc/nginx/conf.d/
+          name: nginx-app-conf
+      imagePullSecrets:
+      - name: docker-secret
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: prometheus-webhook-dingtalk-config
+        name: conf
+      - configMap:
+          defaultMode: 420
+          items:
+          - key: nginx.conf
+            path: nginx.conf
+          name: dingtalk-nginx-ldap
+        name: nginx-conf
+      - configMap:
+          defaultMode: 420
+          items:
+          - key: app.conf
+            path: app.conf
+          name: dingtalk-nginx-ldap
+        name: nginx-app-conf

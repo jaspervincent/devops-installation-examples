@@ -1,0 +1,43 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+metadata:
+  name: prod-eks
+  region: af-south-1
+  version: "1.30"
+
+iam:
+  withOIDC: true
+  serviceRoleARN: "arn:aws:iam::<ACCOUNT_ID>:role/eksClusterRole"
+
+kubernetesNetworkConfig:
+  serviceIPv4CIDR: "172.30.0.0/16"
+
+vpc:
+  id: vpc-08f2f9754398ee943
+#  cidr: "172.30.0.0/16"
+  securityGroup: sg-0ab7cbb82b63d437d
+  subnets:
+    private:
+#      ap-south-1a:
+#        id: "subnet-0212bc31c18162cee"
+#        cidr: "172.42.224.0/21"
+      af-south-1a:
+        id: "subnet-0a50039e33a41b566"
+      af-south-1b:
+        id: "subnet-06d2e2a18bbbb649b"
+      af-south-1c:
+        id: "subnet-0f1d0ca8d52547d99"
+  clusterEndpoints:
+    publicAccess:  false
+    privateAccess: true 
+
+addons:
+  - name: vpc-cni
+  - name: kube-proxy
+  - name: coredns
+
+ #https://eksctl.io/usage/cloudwatch-cluster-logging/ 
+cloudWatch:
+  clusterLogging:
+    enableTypes: ["audit", "authenticator"]
+    logRetentionInDays: 7

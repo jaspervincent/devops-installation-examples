@@ -1,0 +1,173 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-operated
+  namespace: monitoring
+spec:
+  clusterIP: None
+  ports:
+    - name: http-web
+      port: 9090
+      protocol: TCP
+      targetPort: http-web
+  selector:
+    app: prometheus
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: prometheus
+    release: prometheus
+  name: prometheus
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  serviceName: prometheus-operated
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - args:
+            - '--web.console.templates=/etc/prometheus/consoles'
+            - '--web.console.libraries=/etc/prometheus/console_libraries'
+            - '--config.file=/etc/prometheus/config/prometheus.yaml'
+            - '--web.enable-lifecycle'
+            - '--web.external-url=https://kubeprometheus.cici.com'
+            - '--web.route-prefix=/'
+            - '--storage.tsdb.retention.time=90d'
+            - '--storage.tsdb.path=/prometheus'
+            - '--web.enable-admin-api'
+            - '--storage.tsdb.wal-compression'
+          image: prom/prometheus:v2.53.2
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 6
+            httpGet:
+              path: /-/healthy
+              port: http-web
+              scheme: HTTP
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 3
+          name: prometheus
+          ports:
+            - containerPort: 9090
+              name: http-web
+              protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /-/ready
+              port: http-web
+              scheme: HTTP
+            periodSeconds: 5
+            successThreshold: 1
+            timeoutSeconds: 3
+          resources:
+            limits:
+              cpu: "12"
+              memory: 48Gi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          startupProbe:
+            failureThreshold: 60
+            httpGet:
+              path: /-/ready
+              port: http-web
+              scheme: HTTP
+            periodSeconds: 15
+            successThreshold: 1
+            timeoutSeconds: 3
+          volumeMounts:
+            - mountPath: /etc/prometheus/config
+              name: config
+              readOnly: true
+            - mountPath: /prometheus
+              name: kube-prometheus-db
+              subPath: prometheus-db
+            - mountPath: >-
+                /etc/prometheus/rules/prometheus-rules
+              name: prometheus-rules
+            - mountPath: /etc/prometheus/rules/business
+              name: prometheus-rules-business
+        - args:
+            - '--webhook-url=http://127.0.0.1:9090/-/reload'
+            - '--volume-dir=/etc/prometheus/config'
+            - '--volume-dir=/etc/prometheus/rules/prometheus-rules'
+            - '--volume-dir=/etc/prometheus/rules/business'
+          image: jimmidyson/configmap-reload:v0.9.0
+          imagePullPolicy: IfNotPresent
+          name: config-reloader
+          resources:
+            limits:
+              cpu: 10m
+              memory: 10Mi
+            requests:
+              cpu: 10m
+              memory: 10Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /etc/prometheus/config
+              name: config
+            - mountPath: /etc/prometheus/rules/business
+              name: prometheus-rules-business
+            - mountPath: /etc/prometheus/rules/prometheus-rules
+              name: prometheus-rules
+      restartPolicy: Always
+      securityContext:
+        fsGroup: 2000
+        runAsGroup: 2000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: prometheus
+      serviceAccountName: prometheus
+      terminationGracePeriodSeconds: 600
+      volumes:
+        - configMap:
+            defaultMode: 420
+            name: prometheus-config
+          name: config
+        - configMap:
+            defaultMode: 420
+            name: prometheus-rules
+          name: prometheus-rules
+        - configMap:
+            defaultMode: 420
+            name: prometheus-rules-business
+          name: prometheus-rules-business
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: kube-prometheus-db
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 40Gi
+        storageClassName: gp3
+        volumeMode: Filesystem
+

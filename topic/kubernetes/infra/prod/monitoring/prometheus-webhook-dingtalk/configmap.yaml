@@ -1,0 +1,200 @@
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: prometheus-webhook-dingtalk-config
+  namespace: monitoring
+data:
+  config.yml: |-
+    templates:
+      - /config/template.tmpl
+    targets:
+      default-webhook-warning:
+        # 默认告警群
+        url: https://oapi.dingtalk.com/robot/send?access_token=x23b73e1f5ec5
+        # secret for signature
+        secret: Sx6
+      domain-webhook-warning:
+        # domain PRD 告警群
+        url: https://oapi.dingtalk.com/robot/send?access_token=5x91fbab
+        # secret for signature
+        secret: SEC7x05a207
+      cici-webhook-critical:
+        # Loodo PRD 告警群
+        url: https://oapi.dingtalk.com/robot/send?access_token=0953f685xb236b23918
+        ## secret for signature
+        secret: SEC1123x99d68dd7490b
+      cici-webhook-warning:
+        # Loodo PRD 告警群
+        url: https://oapi.dingtalk.com/robot/send?access_token=cfde2a2acx9826
+        ## secret for signature
+        secret: xa9bba7
+      db-webhook-p1:
+        # Bi db 告警群
+        url: https://oapi.dingtalk.com/robot/send?access_token=xbc59475b285
+        # secret for signature
+        secret: SExe033
+      db-webhook-p2:
+        # bi db 告警群
+        url: https://oapi.dingtalk.com/robot/send?access_token=2f22e1ax8ce2e6a1
+        # secret for signature
+        secret: SECfxa60917cb
+      db-webhook-p3:
+        # bi db 告警群
+        url: https://oapi.dingtalk.com/robot/send?access_token=421d4dc5xe041ac
+        # secret for signature
+        secret: SECd2091xe2bde7
+  template.tmpl: |-
+    {{ define "__subject" }}[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .GroupLabels.SortedPairs.Values | join " " }} {{ if gt (len .CommonLabels) (len .GroupLabels) }}({{ with .CommonLabels.Remove .GroupLabels.Names }}{{ .Values | join " " }}{{ end }}){{ end }}{{ end }}
+    {{ define "__alertmanagerURL" }}{{ .ExternalURL }}/#/alerts?receiver={{ .Receiver }}{{ end }}
+
+    {{ define "default.__text_alert_list" }}{{ range . }}
+    #### \[{{ .Labels.severity | upper }}\] {{ .Annotations.summary }}
+
+    **Description:** {{ .Annotations.description }}
+
+    **Graph:** [📈]({{ .GeneratorURL }})
+
+    **Details:**
+    {{ range .Labels.SortedPairs }}{{ if and (ne (.Name) "severity") (ne (.Name) "summary") }}> - {{ .Name }}: {{ .Value | markdown | html }}
+    {{ end }}{{ end }}
+    {{ end }}{{ end }}
+
+    {{/* Default */}}
+    {{ define "default.title" }}{{ template "__subject" . }}{{ end }}
+    {{ define "default.content" }}#### \[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}\] **[{{ index .GroupLabels "alertname" }}]({{ template "__alertmanagerURL" . }})**
+    {{ if gt (len .Alerts.Firing) 0 -}}
+    **Alerts Firing**
+    {{ template "default.__text_alert_list" .Alerts.Firing }}
+    {{- end }}
+    {{ if gt (len .Alerts.Resolved) 0 -}}
+    **Alerts Resolved**
+    {{ template "default.__text_alert_list" .Alerts.Resolved }}
+    {{- end }}
+    {{- end }}
+
+    {{/* Customizable templates by jasper */}}
+    {{ define "__prometheusURL" }}https://pfgc-prometheus-prod.gamepind.com/eks/alerts{{ end }}
+    {{ define "__text_alert_list" }}{{ range . }}
+    Summary: {{ .Annotations.summary }}
+
+    Description: {{ .Annotations.description }}
+
+    Graph: [📈]({{ .GeneratorURL }})
+
+    Details:
+    {{ range .Labels.SortedPairs }}{{ if and (ne (.Name) "severity") (ne (.Name) "summary") }}> - {{ .Name }}: {{ .Value | markdown | html }}
+    {{ end }}{{ end }}
+
+    Severity: {{ .Labels.severity }}
+
+    Status: {{ .Status }}
+
+    StartAt: {{ (.StartsAt.Add 28800e9).Format "2006-01-02 15:04:05" }}
+
+    Solution: {{ .Annotations.runbook_url }}
+
+    ------------------------
+    {{ end }}{{ end }}
+
+    {{ define "__text_alertresovle_list" }}{{ range .  }}
+    Summary: {{ .Annotations.summary }}
+
+    Description: {{ .Annotations.description }}
+
+    Graph: [📈]({{ .GeneratorURL }})
+
+    StartsAt: {{ (.StartsAt.Add 28800e9).Format "2006-01-02 15:04:05" }}
+
+    EndsAt: {{ (.EndsAt.Add 28800e9).Format "2006-01-02 15:04:05" }}
+
+    Solution: {{ .Annotations.runbook_url }}
+
+    ------------------------
+    {{ end }}{{ end }}
+
+    {{/* Legacy */}}
+    {{ define "legacy.title" }}{{ template "__subject" . }}{{ end }}
+    {{ define "legacy.content" }}#### \[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}\] **[{{ index .CommonLabels "alertname" }}]({{ template "__alertmanagerURL" . }})**
+    {{ if gt (len .Alerts.Firing) 0 -}}
+    {{ template "__text_alert_list" .Alerts.Firing }}
+    {{- end }}
+    {{ if gt (len .Alerts.Resolved) 0 -}}
+    {{ template "__text_alertresovle_list" .Alerts.Resolved }}
+    {{- end }}
+    {{- end }}    
+
+    {{/* Following names for compatibility */}}
+    {{ define "ding.link.title" }}{{ template "legacy.title" . }}{{ end }}
+    {{ define "ding.link.content" }}{{ template "legacy.content" . }}{{ end }}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dingtalk-nginx-ldap
+  namespace: monitoring
+data:
+  app.conf: |-
+    upstream dingtalk {
+        server prometheus-webhook-dingtalk:8060 weight=1;
+    }
+    server {
+        listen       80;
+        server_name  localhost;
+
+        location ~ \.(gif|jpg|png|css|js|svg|woff2|html|json|query)$ {
+            proxy_pass http://dingtalk;
+        }
+
+        location / {
+            proxy_pass http://dingtalk/;
+            auth_ldap    "Forbidden";
+            auth_ldap_servers   localdir;
+        }
+        error_page   500 502 503 504  /50x.html;
+        location = /50x.html {
+            root   /usr/share/nginx/html;
+        }
+    }
+  nginx.conf: |-
+    user  nginx;
+    worker_processes  auto;
+
+    error_log  /var/log/nginx/error.log warn;
+    pid        /var/run/nginx.pid;
+    load_module modules/ngx_http_auth_ldap_module.so;
+
+    events {
+        worker_connections  1024;
+    }
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log  /var/log/nginx/access.log  main;
+
+        sendfile        on;
+
+        keepalive_timeout  65;
+
+        proxy_ignore_client_abort on;
+
+        ldap_server localdir {
+          url ldap://freeipa.cici.com:389/cn=users,cn=accounts,dc=gamepind,dc=com?uid?sub?(&(objectClass=inetorgPerson)(memberOf=cn=pfg-developer,cn=groups,cn=accounts,dc=gamepind,dc=com));
+          binddn "uid=pfgc.ops,cn=users,cn=accounts,dc=gamepind,dc=com";
+          binddn_passwd "ops!@QWEsdxxxx561";
+          #group_attribute memberuid;
+          #group_attribute_is_dn on;
+          #require valid_user;
+          #max_down_retries 3;
+        }
+
+        include /etc/nginx/conf.d/*.conf;
+    }
+    #include /etc/nginx/tcp.conf;

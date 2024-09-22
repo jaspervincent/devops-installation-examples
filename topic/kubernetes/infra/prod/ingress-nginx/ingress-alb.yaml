@@ -1,0 +1,33 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-prod
+  namespace: ingress-nginx-prod
+  annotations:
+    #kubernetes.io/ingress.class: "alb"
+    alb.ingress.kubernetes.io/group.name: "ingress-prod"
+    alb.ingress.kubernetes.io/group.order: "900"
+    alb.ingress.kubernetes.io/load-balancer-name: ingress-prod-alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/security-groups: sg-0ab7cbb82b63d437d, sg-0473503fd2278b0f5
+    alb.ingress.kubernetes.io/subnets: subnet-06ff69c0f8b9c5c90, subnet-0dd914d53a539646e, subnet-0905c8c21ce63230b
+    alb.ingress.kubernetes.io/success-codes: '200-499'
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80},{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:af-south-1:<ACCOUNT_ID>:certificate/f69c55bf-8602-443c-af2d-0b9a700d89b5
+    alb.ingress.kubernetes.io/tags: Techteam=RC, Application=Platform, Name=ingress-prod-alb, Environment=Production, Author=jasper.xu
+spec:
+  ingressClassName: alb
+  rules:
+    - host: "*.cici.com"
+      http:
+        paths:
+          - pathType: ImplementationSpecific
+            path: /*
+            backend:
+              service:
+                name: ingress-nginx-controller
+                port:
+                  number: 80
