@@ -88,8 +88,12 @@ ingress:
 #vim   :%s@nodeSelector:.*@nodeSelector: {type: adm-ops}@g
 ```
 
-amd镜像服务： clickhouse
+amd镜像服务： clickhouse\cleanup
 ```
+sentry:
+  cleanup:
+    nodeSelector: {type: adm-ops}
+
 clickhouse:
   enabled: true
   clickhouse:

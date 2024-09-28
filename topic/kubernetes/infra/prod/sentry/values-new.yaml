@@ -810,6 +810,7 @@ sentry:
       periodSeconds: 320
 
   cleanup:
+    nodeSelector: {type: adm-ops}
     successfulJobsHistoryLimit: 5
     failedJobsHistoryLimit: 5
     activeDeadlineSeconds: 100
