@@ -120,6 +120,11 @@ sentry upgrade
 sentry createuser --force-update
 ```
 
+重启服务
+```bash
+for s in `kubectl  -n sentry get deploy  |sed '1d'|awk '{print $1}'`; do echo $s; kubectl -n sentry rollout restart deploy $s  ;done
+```
+
 卸载
 ```bash
 helm uninstall sentry -n sentry
