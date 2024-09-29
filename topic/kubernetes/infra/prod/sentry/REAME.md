@@ -97,7 +97,13 @@ sentry:
 clickhouse:
   enabled: true
   clickhouse:
-    nodeSelector: {type: adm-ops} 
+    nodeSelector: {type: adm-ops}
+
+kafka:
+  enabled: true
+  provisioning:
+    enabled: true
+    nodeSelector: {type: adm-ops}
 ```
 
 安装

@@ -1889,6 +1889,7 @@ kafka:
     # - https://github.com/getsentry/snuba/blob/master/snuba/utils/streams/topics.py
     # - https://github.com/getsentry/self-hosted/blob/master/install/create-kafka-topics.sh#L6
     # Note that snuba component might fail if you set `hooks.snubaInit.kafka.enabled` to `false` and remove the topics from this default topic list.
+    nodeSelector: {type: adm-ops}
     topics:
       - name: events
         config:
