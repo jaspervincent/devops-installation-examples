@@ -61,11 +61,11 @@ mail:
   username: this@gmail.com
   #password: ""
   existingSecret: sentry-custom-account
-  existingSecretKey: mail-password                                                                                                                           
+  existingSecretKey: mail-password
   port: 587
   host: smtp.gmail.com
   from: this@gmail.com
-
+#注意，如果使用gmail邮箱，需要开启双重认证后，找到应用专用密码，创建16位密码
 
 symbolicator:
   enabled: true   
