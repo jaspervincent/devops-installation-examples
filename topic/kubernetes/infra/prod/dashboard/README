@@ -1,0 +1,6 @@
+#https://github.com/kubernetes/dashboard/blob/master/docs/user/access-control/creating-sample-user.md
+kubectl get secret admin-user -n kubernetes-dashboard -o jsonpath={".data.token"} | base64 -d
+
+alias gett='kubectl -n kube-system get secret cluster-readonly -o jsonpath={.data.token} | base64 -d'
+alias gettt='kubectl  -n kubernetes-dashboard get secret admin-user -o jsonpath={.data.token} | base64 -d'
+
