@@ -74,10 +74,21 @@ rules:
   - deployments/rollback
   - deployments/scale
   - statefulsets
+  - replicasets
   verbs:
   - get
   - list
   - watch
+#- apiGroups:
+#  - apps
+#  resources:
+#  - deployments
+#  - deployments/rollback
+#  - deployments/scale
+#  - statefulsets
+#  - replicasets
+#  verbs:
+#  - update
 - apiGroups:
   - autoscaling
   resources:

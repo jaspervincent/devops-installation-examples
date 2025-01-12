@@ -1,0 +1,169 @@
+# https://kubernetes.io/docs/concepts/configuration/configmap/
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-mq-broker
+  namespace: infra
+data:
+  mq-broker-1.conf: |
+    namesrvAddr=mq-name-a:9876;mq-name-b:9876
+    brokerClusterName = DefaultCluster
+    brokerName = broker-1
+    brokerId = 0
+    #是否允许 Broker 自动创建Topic，生产建议关闭
+    autoCreateTopicEnable = false
+    #是否允许 Broker 自动创建订阅组，生产建议关闭
+    autoCreateSubscriptionGroup = true
+    #每个topic对应队列的数量，默认为4，实际应参考consumer实例的数量，值过小不利于consumer负载均衡
+    defaultTopicQueueNums=8
+    deleteWhen = 04
+    fileReservedTime = 48
+    brokerRole = ASYNC_MASTER
+    flushDiskType = ASYNC_FLUSH
+    #存储路径
+    storePathRootDir=/opt/store
+    #commitLog 存储路径
+    storePathCommitLog=/opt/store/commitlog
+    #消费队列存储路径存储路径
+    storePathConsumeQueue=/opt/store/consumequeue
+    #消息索引存储路径
+    storePathIndex=/opt/store/index
+    #checkpoint 文件存储路径
+    storeCheckpoint=/opt/store/checkpoint
+    #abort 文件存储路径
+    abortFile=/opt/store/abort
+  mq-broker-1-s.conf: |
+    namesrvAddr=mq-name-a:9876;mq-name-b:9876
+    brokerClusterName = DefaultCluster
+    brokerName = broker-1
+    brokerId = 1
+    #是否允许 Broker 自动创建Topic，生产建议关闭
+    autoCreateTopicEnable = false
+    #是否允许 Broker 自动创建订阅组，生产建议关闭
+    autoCreateSubscriptionGroup = true
+    #每个topic对应队列的数量，默认为4，实际应参考consumer实例的数量，值过小不利于consumer负载均衡
+    defaultTopicQueueNums=8
+    deleteWhen = 04
+    fileReservedTime = 48
+    brokerRole = SLAVE
+    flushDiskType = ASYNC_FLUSH
+    #存储路径
+    storePathRootDir=/opt/store
+    #commitLog 存储路径
+    storePathCommitLog=/opt/store/commitlog
+    #消费队列存储路径存储路径
+    storePathConsumeQueue=/opt/store/consumequeue
+    #消息索引存储路径
+    storePathIndex=/opt/store/index
+    #checkpoint 文件存储路径
+    storeCheckpoint=/opt/store/checkpoint
+    #abort 文件存储路径
+    abortFile=/opt/store/abort
+  mq-broker-2.conf: |
+    namesrvAddr=mq-name-a:9876;mq-name-b:9876
+    brokerClusterName = DefaultCluster
+    brokerName = broker-2
+    brokerId = 0
+    #是否允许 Broker 自动创建Topic，生产建议关闭
+    autoCreateTopicEnable = false
+    #是否允许 Broker 自动创建订阅组，生产建议关闭
+    autoCreateSubscriptionGroup = true
+    #每个topic对应队列的数量，默认为4，实际应参考consumer实例的数量，值过小不利于consumer负载均衡
+    defaultTopicQueueNums=8
+    deleteWhen = 04
+    fileReservedTime = 48
+    brokerRole = ASYNC_MASTER
+    flushDiskType = ASYNC_FLUSH
+    #存储路径
+    storePathRootDir=/opt/store
+    #commitLog 存储路径
+    storePathCommitLog=/opt/store/commitlog
+    #消费队列存储路径存储路径
+    storePathConsumeQueue=/opt/store/consumequeue
+    #消息索引存储路径
+    storePathIndex=/opt/store/index
+    #checkpoint 文件存储路径
+    storeCheckpoint=/opt/store/checkpoint
+    #abort 文件存储路径
+    abortFile=/opt/store/abort
+  mq-broker-2-s.conf: |
+    namesrvAddr=mq-name-a:9876;mq-name-b:9876
+    brokerClusterName = DefaultCluster
+    brokerName = broker-2
+    brokerId = 1
+    #是否允许 Broker 自动创建Topic，生产建议关闭
+    autoCreateTopicEnable = false
+    #是否允许 Broker 自动创建订阅组，生产建议关闭
+    autoCreateSubscriptionGroup = true
+    #每个topic对应队列的数量，默认为4，实际应参考consumer实例的数量，值过小不利于consumer负载均衡
+    defaultTopicQueueNums=8
+    deleteWhen = 04
+    fileReservedTime = 48
+    brokerRole = SLAVE
+    flushDiskType = ASYNC_FLUSH
+    #存储路径
+    storePathRootDir=/opt/store
+    #commitLog 存储路径
+    storePathCommitLog=/opt/store/commitlog
+    #消费队列存储路径存储路径
+    storePathConsumeQueue=/opt/store/consumequeue
+    #消息索引存储路径
+    storePathIndex=/opt/store/index
+    #checkpoint 文件存储路径
+    storeCheckpoint=/opt/store/checkpoint
+    #abort 文件存储路径
+    abortFile=/opt/store/abort
+  mq-broker-3.conf: |
+    namesrvAddr=mq-name-a:9876;mq-name-b:9876
+    brokerClusterName = DefaultCluster
+    brokerName = broker-3
+    brokerId = 0
+    #是否允许 Broker 自动创建Topic，生产建议关闭
+    autoCreateTopicEnable = false
+    #是否允许 Broker 自动创建订阅组，生产建议关闭
+    autoCreateSubscriptionGroup = true
+    #每个topic对应队列的数量，默认为4，实际应参考consumer实例的数量，值过小不利于consumer负载均衡
+    defaultTopicQueueNums=8
+    deleteWhen = 04
+    fileReservedTime = 48
+    brokerRole = ASYNC_MASTER
+    flushDiskType = ASYNC_FLUSH
+    #存储路径
+    storePathRootDir=/opt/store
+    #commitLog 存储路径
+    storePathCommitLog=/opt/store/commitlog
+    #消费队列存储路径存储路径
+    storePathConsumeQueue=/opt/store/consumequeue
+    #消息索引存储路径
+    storePathIndex=/opt/store/index
+    #checkpoint 文件存储路径
+    storeCheckpoint=/opt/store/checkpoint
+    #abort 文件存储路径
+    abortFile=/opt/store/abort
+  mq-broker-4.conf: |
+    namesrvAddr=mq-name-a:9876;mq-name-b:9876
+    brokerClusterName = DefaultCluster
+    brokerName = broker-4
+    brokerId = 0
+    #是否允许 Broker 自动创建Topic，生产建议关闭
+    autoCreateTopicEnable = false
+    #是否允许 Broker 自动创建订阅组，生产建议关闭
+    autoCreateSubscriptionGroup = true
+    #每个topic对应队列的数量，默认为4，实际应参考consumer实例的数量，值过小不利于consumer负载均衡
+    defaultTopicQueueNums=8
+    deleteWhen = 04
+    fileReservedTime = 48
+    brokerRole = ASYNC_MASTER
+    flushDiskType = ASYNC_FLUSH
+    #存储路径
+    storePathRootDir=/opt/store
+    #commitLog 存储路径
+    storePathCommitLog=/opt/store/commitlog
+    #消费队列存储路径存储路径
+    storePathConsumeQueue=/opt/store/consumequeue
+    #消息索引存储路径
+    storePathIndex=/opt/store/index
+    #checkpoint 文件存储路径
+    storeCheckpoint=/opt/store/checkpoint
+    #abort 文件存储路径
+    abortFile=/opt/store/abort
