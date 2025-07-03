@@ -30,50 +30,74 @@ spec:
         appgroup: mq-nameserver
     spec:
       containers:
-        - name: mq-nameserver-1
-          image: gehuiwin/rocketmq:4.9.2
-          imagePullPolicy: IfNotPresent
-          env:
-          - name: JAVA_OPT_EXT
-            value: "-Duser.timezone=Asia/Calcutta -Duser.home=/home/rocketmq -Xms512M -Xmx512M -Xmn512m"
-          command:
-          - sh
-          - mqnamesrv
-          resources:
-            limits:
-              cpu: 1
-              memory: 2Gi
-            requests:
-              cpu: 250m
-              memory: 512Mi
-          readinessProbe:
-            tcpSocket:
-              port: 9876
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 1
-            failureThreshold: 3
-            successThreshold: 1
-          livenessProbe:
-            tcpSocket:
-              port: 9876
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 1
-            failureThreshold: 3
-            successThreshold: 1
+      - name: mq-nameserver-1
+        image: gehuiwin/rocketmq:4.9.2
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: JAVA_OPT_EXT
+          value: |-
+            -XX:+PerfDisableSharedMem
+            -Xloggc:/home/rocketmq/logs/rocketmq_gc.log
+            -XX:+PrintGCDetails 
+            -XX:+PrintGCDateStamps 
+            -XX:+PrintGCTimeStamps
+            -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=4 -XX:GCLogFileSize=128M
+            -Duser.timezone=Asia/Calcutta -Duser.home=/home/rocketmq -Xms512M -Xmx512M -Xmn512m
+        command:
+        - sh
+        - mqnamesrv
+        resources:
+          limits:
+            cpu: 1
+            memory: 2Gi
+          requests:
+            cpu: 25m
+            memory: 512Mi
+        readinessProbe:
+          tcpSocket:
+            port: 9876
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 1
+          failureThreshold: 3
+          successThreshold: 1
+        livenessProbe:
+          tcpSocket:
+            port: 9876
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 1
+          failureThreshold: 3
+          successThreshold: 1
+        volumeMounts:
+        - name: logs
+          mountPath: /home/rocketmq/logs
+      volumes:
+      - name: logs
+        emptyDir: {}
       #nodeSelector:
       #  type: infra
       affinity:
         podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchExpressions:
-                  - key: appgroup
-                    operator: In
-                    values:
-                      - mq-nameserver
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  appgroup: mq-nameserver
+              namespaces:
+              - infra
               topologyKey: kubernetes.io/hostname
+            weight: 1 
+
+#        podAntiAffinity:
+#          requiredDuringSchedulingIgnoredDuringExecution:
+#            - labelSelector:
+#                matchExpressions:
+#                  - key: appgroup
+#                    operator: In
+#                    values:
+#                      - mq-nameserver
+#              topologyKey: kubernetes.io/hostname
   replicas: 1
   updateStrategy:
     type: RollingUpdate
