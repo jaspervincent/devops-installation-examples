@@ -11,39 +11,31 @@ data:
     targets:
       default-webhook-warning:
         # 默认告警群
-        url: https://oapi.dingtalk.com/robot/send?access_token=x23b73e1f5ec5
-        # secret for signature
-        secret: Sx6
+        url: https://oapi.dingtalk.com/robot/send?access_token=xxx
+        secret: SECxxx
       domain-webhook-warning:
         # domain PRD 告警群
-        url: https://oapi.dingtalk.com/robot/send?access_token=5x91fbab
-        # secret for signature
-        secret: SEC7x05a207
-      cici-webhook-critical:
-        # Loodo PRD 告警群
-        url: https://oapi.dingtalk.com/robot/send?access_token=0953f685xb236b23918
-        ## secret for signature
-        secret: SEC1123x99d68dd7490b
-      cici-webhook-warning:
-        # Loodo PRD 告警群
-        url: https://oapi.dingtalk.com/robot/send?access_token=cfde2a2acx9826
-        ## secret for signature
-        secret: xa9bba7
+        url: https://oapi.dingtalk.com/robot/send?access_token=xxx
+        secret: SECxxx
+      business-webhook-critical:
+        url: https://oapi.dingtalk.com/robot/send?access_token=xxx
+        secret: SECxxx
+      business-webhook-warning:
+        url: https://oapi.dingtalk.com/robot/send?access_token=xxx
+        secret: SECxxx
       db-webhook-p1:
         # Bi db 告警群
-        url: https://oapi.dingtalk.com/robot/send?access_token=xbc59475b285
-        # secret for signature
-        secret: SExe033
+        url: https://oapi.dingtalk.com/robot/send?access_token=xxx
+        secret: SECxxx
       db-webhook-p2:
         # bi db 告警群
-        url: https://oapi.dingtalk.com/robot/send?access_token=2f22e1ax8ce2e6a1
-        # secret for signature
-        secret: SECfxa60917cb
+        url: https://oapi.dingtalk.com/robot/send?access_token=xxx
+        secret: SECxxx
       db-webhook-p3:
         # bi db 告警群
         url: https://oapi.dingtalk.com/robot/send?access_token=421d4dc5xe041ac
-        # secret for signature
-        secret: SECd2091xe2bde7
+        secret: SECxxx
+
   template.tmpl: |-
     {{ define "__subject" }}[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .GroupLabels.SortedPairs.Values | join " " }} {{ if gt (len .CommonLabels) (len .GroupLabels) }}({{ with .CommonLabels.Remove .GroupLabels.Names }}{{ .Values | join " " }}{{ end }}){{ end }}{{ end }}
     {{ define "__alertmanagerURL" }}{{ .ExternalURL }}/#/alerts?receiver={{ .Receiver }}{{ end }}
@@ -122,7 +114,7 @@ data:
     {{ if gt (len .Alerts.Resolved) 0 -}}
     {{ template "__text_alertresovle_list" .Alerts.Resolved }}
     {{- end }}
-    {{- end }}    
+    {{- end }}
 
     {{/* Following names for compatibility */}}
     {{ define "ding.link.title" }}{{ template "legacy.title" . }}{{ end }}
@@ -186,9 +178,9 @@ data:
         proxy_ignore_client_abort on;
 
         ldap_server localdir {
-          url ldap://freeipa.cici.com:389/cn=users,cn=accounts,dc=gamepind,dc=com?uid?sub?(&(objectClass=inetorgPerson)(memberOf=cn=pfg-developer,cn=groups,cn=accounts,dc=gamepind,dc=com));
-          binddn "uid=pfgc.ops,cn=users,cn=accounts,dc=gamepind,dc=com";
-          binddn_passwd "ops!@QWEsdxxxx561";
+          url ldap://freeipa.cici.com:389/cn=users,cn=accounts,dc=game,dc=com?uid?sub?(&(objectClass=inetorgPerson)(memberOf=cn=pfg-developer,cn=groups,cn=accounts,dc=gamepind,dc=com));
+          binddn "uid=rc.ops,cn=users,cn=accounts,dc=game,dc=com";
+          binddn_passwd "rc-ops!@QWE=sf#t61";
           #group_attribute memberuid;
           #group_attribute_is_dn on;
           #require valid_user;

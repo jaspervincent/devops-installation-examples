@@ -403,7 +403,10 @@ data:
           - kube-public
           - kube-system
           - monitoring
-          - slots-prod
+          - staging-b-a
+          - staging-b-b
+          - b-a
+          - b-b
       relabel_configs:
       - source_labels: [__meta_kubernetes_pod_container_name]
         regex: "filebeat.*|skywalking-sidecar"
@@ -494,8 +497,10 @@ data:
           - kube-public
           - kube-system
           - monitoring
-          - slots-prod
-
+          - staging-b-a
+          - staging-b-b
+          - b-a
+          - b-b
       relabel_configs:
       - source_labels: [__meta_kubernetes_pod_container_name]
         regex: "filebeat.*"
@@ -594,6 +599,33 @@ data:
         replacement: $1
         action: replace
 
+    - job_name: 'ingress-nginx-endpoints'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - ingress-nginx-prod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scheme]
+        action: replace
+        target_label: __scheme__
+        regex: (https?)
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: prometheus-server
+        action: drop
+
     - job_name: blackbox-exporter
       honor_timestamps: true
       scrape_interval: 15s
@@ -623,7 +655,6 @@ data:
           - kube-dns.kube-system:53
         labels:
           product_line: public
-          severity: info
       relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
@@ -640,10 +671,13 @@ data:
         modelue: [http_2xx]
       static_configs:
       - targets:
-          - https://baidu.com
+          - https://whot365.com
+          - https://gitlab-rc.realmjackpot.com
+          - https://b-a-admin.cashb-apro.in
+          - https://b-b-admin.cashb-apro.in
+          - https://s.b-axking.in
         labels:
           product_line: public
-          severity: info
       relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
@@ -660,10 +694,19 @@ data:
         modelue: [http_2xx]
       static_configs:
       - targets:
-          - https://baidu.com
+          - https://gitlab.cici.com
+          - https://kubenacos.cici.com/nacos/#/login
+          #- wss://b-a.cashb-apro.in
         labels:
           product_line: public
-          severity: info
+      - targets:
+          - http://b-a-gateway-2.b-a:9002/api/health/check
+        labels:
+          product_line: b-a
+      - targets:
+          - http://b-b-admin.b-b:38888/actuator/health
+        labels:
+          product_line: b-b
       relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
@@ -672,11 +715,11 @@ data:
       - target_label: __address__
         replacement: blackbox-exporter:19115
 
-    ##DB
+    #DB
     - job_name: redis-exporter-targets
       static_configs:
       - targets:
-        - redis://redis.afs1.cache.amazonaws.com:6379
+        - redis://prod-b-a-redis.xxx.com:6379
         labels:
           dbtype: "db-redis"
       metrics_path: /scrape
@@ -688,13 +731,66 @@ data:
       - target_label: __address__
         replacement: redis-exporter:9121
 
-
-    ##Business
-    - job_name: slots-game-server
-      honor_timestamps: true
-      metrics_path: /metrics
-      scheme: http
-      follow_redirects: true
+    - job_name: mysql-ec2
       static_configs:
       - targets:
-        - slots-game-server.slots-prod:13000
+        - "10.0.224.4:9100"
+        labels:
+          business: b-a
+          svc: Services
+          type: mysql-master-slave
+          service: "mysql-prod"
+          dbtype: "db-mysql-db"
+      - targets:
+        - "10.0.224.184:9100"
+        labels:
+          business: b-b
+          svc: Services
+          type: mysql-master-slave
+          service: "mysql-prod"
+          dbtype: "db-mysql-db"
+      relabel_configs:
+      - source_labels: [job]
+        separator: ;
+        regex: (.*)
+        target_label: __tmp_prometheus_job_name
+        replacement: $1
+        action: replace
+      - separator: ;
+        regex: (.*)
+        target_label: job
+        replacement: node-exporter
+        action: replace
+
+    - job_name: mysql-db
+      scrape_interval: 20s
+      honor_labels: true
+      static_configs:
+      - targets:
+        - "10.0.224.4:9104"
+        labels:
+          business: b-a
+          svc: Services
+          type: mysql-master-slave
+          service: "mysql-prod"
+          dbtype: "db-mysql-db"
+      - targets:
+        - "10.0.224.184:9104"
+        labels:
+          business: b-b
+          svc: Services
+          type: mysql-master-slave
+          service: "mysql-prod"
+          dbtype: "db-mysql-db"
+
+    ##Business
+    #- job_name: slots-game-server
+    #  honor_timestamps: true
+    #  metrics_path: /metrics
+    #  scheme: http
+    #  follow_redirects: true
+    #  static_configs:
+    #  - targets:
+    #    - slots-game-server.slots-prod:13000
+
+

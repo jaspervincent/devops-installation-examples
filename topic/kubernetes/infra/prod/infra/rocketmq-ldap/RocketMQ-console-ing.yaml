@@ -1,11 +1,11 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  annotations:
-    nginx.ingress.kubernetes.io/auth-type: basic
-    nginx.ingress.kubernetes.io/auth-secret: rocketmq-auth
-    # 账号kube-auth  密码：kube-auth2025
-    nginx.ingress.kubernetes.io/auth-realm: 'Authentication Required - foo'
+  #annotations:
+  #  nginx.ingress.kubernetes.io/auth-type: basic
+  #  nginx.ingress.kubernetes.io/auth-secret: rocketmq-auth
+  #  # 账号kube-auth  密码：kube-auth2025
+  #  nginx.ingress.kubernetes.io/auth-realm: 'Authentication Required - foo'
   name: ing-mq-console
   namespace: infra
 spec:
@@ -18,6 +18,6 @@ spec:
           service:
             name: svc-mq-console
             port:
-              number: 8180
+              number: 80
         path: /
         pathType: ImplementationSpecific

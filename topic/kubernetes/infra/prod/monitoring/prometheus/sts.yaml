@@ -40,13 +40,13 @@ spec:
             - '--web.console.libraries=/etc/prometheus/console_libraries'
             - '--config.file=/etc/prometheus/config/prometheus.yaml'
             - '--web.enable-lifecycle'
-            - '--web.external-url=https://kubeprometheus.cici.com'
+            - '--web.external-url=https://kubeprometheus.cashrummypro.in'
             - '--web.route-prefix=/'
-            - '--storage.tsdb.retention.time=90d'
+            - '--storage.tsdb.retention.time=60d'
             - '--storage.tsdb.path=/prometheus'
             - '--web.enable-admin-api'
             - '--storage.tsdb.wal-compression'
-          image: prom/prometheus:v2.53.2
+          image: prom/prometheus:v3.4.1
           imagePullPolicy: IfNotPresent
           livenessProbe:
             failureThreshold: 6
@@ -110,7 +110,8 @@ spec:
             - '--volume-dir=/etc/prometheus/config'
             - '--volume-dir=/etc/prometheus/rules/prometheus-rules'
             - '--volume-dir=/etc/prometheus/rules/business'
-          image: jimmidyson/configmap-reload:v0.9.0
+          #image: jimmidyson/configmap-reload:v0.9.0
+          image: ghcr.io/jimmidyson/configmap-reload:v0.15.0
           imagePullPolicy: IfNotPresent
           name: config-reloader
           resources:
@@ -167,7 +168,7 @@ spec:
           - ReadWriteOnce
         resources:
           requests:
-            storage: 40Gi
+            storage: 50Gi
         storageClassName: gp3
         volumeMode: Filesystem
 

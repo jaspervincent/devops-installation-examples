@@ -8,7 +8,9 @@ spec:
   selector:
     app: mq-console
   ports:
-    - name: tcp-8888
+    - name: tcp-80
+      port: 80
+    - name: tcp-8180
       port: 8180
 ---
 apiVersion: apps/v1
@@ -27,6 +29,18 @@ spec:
         app: mq-console
     spec:
       containers:
+        - name: mq-ldap
+          image: pfgc-ops-harbor.gamepind.com/devops/nginx-ldap:v1
+          # https://kubernetes.io/docs/concepts/storage/volumes/
+          volumeMounts:
+            - mountPath: /etc/nginx/conf.d/default.conf
+              name: vol-mq-ldap
+              subPath: default.conf
+            - mountPath: /etc/nginx/nginx.conf
+              name: vol-mq-ldap
+              subPath: nginx.conf
+          stdin: true
+          tty: true
         - name: mq-console
           image: zhanyifan1997/rocketmq-console-ng:latest
           env:
@@ -62,4 +76,8 @@ spec:
       #  type: infra
       #imagePullSecrets:
       #  - name: docker-secret
+      volumes:
+        - name: vol-mq-ldap
+          configMap:
+            name: cm-mq-console
   replicas: 1

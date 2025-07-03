@@ -1,0 +1,132 @@
+---
+# Source: metabase/templates/metabase-svc.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: metabase-metabase
+  namespace: infra
+spec:
+  selector:
+    org.metabase.instance: metabase-metabase
+  ports:
+  - targetPort: 3000
+    port: 3000
+    name: app
+  type: ClusterIP
+---
+# Source: metabase/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: metabase-metabase
+  namespace: infra
+data:
+  db-password: WTNuNFBxNj1UMUtkYQ==
+---
+# Source: metabase/templates/metabase-deploy.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metabase-metabase
+  namespace: infra
+  labels:
+    org.metabase.project: metabase
+    org.metabase.app: app
+    org.metabase.instance: metabase-metabase
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      org.metabase.instance: metabase-metabase
+  template:
+    metadata:
+      labels:
+        org.metabase.project: metabase
+        org.metabase.app: app
+        org.metabase.instance: metabase-metabase
+    spec:
+      initContainers:
+
+      ## Wait for db
+      #- name: wait-db
+      #  image: jwilder/dockerize:0.6.1
+      #  args:
+      #  - -wait
+      #  - tcp://infra-mysql:3306
+      #  - -timeout
+      #  - 300s
+
+      containers:
+      - name: app
+        #image: "metabase/metabase:v0.54.13.5"
+        image: "metabase/metabase:v0.54.10"
+        # Mount custom plugin folder
+        volumeMounts:
+        - name: plugin-volume
+          mountPath: /plugins
+        - mountPath: /etc/localtime
+          name: time
+        - mountPath: /metabase-data
+          name: metabase-data
+        env:
+        - name: JAVA_OPTS
+          value: "-Xmx1843m -Xms512m"
+        - name: JAVA_TIMEZONE
+          value: "JAVA_TIMEZONE"
+        - name: MB_DB_TYPE
+          value: "mysql"
+        - name: MB_DB_DBNAME
+          value: "metabaseappdb"
+        - name: MB_DB_PORT
+          value: "3306"
+        - name: MB_DB_USER
+          value: "metabase_user"
+        #- name: MB_DB_PASS
+        #  value: "Y3n4Pq6=T1Kda"
+        - name: MB_DB_PASS
+          valueFrom:
+            secretKeyRef:
+              name: metabase-metabase
+              key: db-password
+        - name: MB_DB_HOST
+          value: "infra-mysql"
+        - name: MB_DB_CONNECTION_URI
+          value: "jdbc:mysql://infra-mysql:3306/metabaseappdb?user=metabase_user&password=Y3n4Pq6=T1Kda&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Kolkata"
+        - name: MB_QUERY_TIMEOUT_MS
+          value: "120000"
+        - name: MB_FEATURE_DISABLE_QUERY_STREAMING
+          value: "true"  
+        - name: MB_DB_LOG_QUERIES
+          value: "true"  
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 15
+        #livenessProbe:
+        #  httpGet:
+        #    path: /api/health
+        #    port: 3000
+        #  initialDelaySeconds: 60
+        #  periodSeconds: 5
+        #  failureThreshold: 5
+        resources:
+          limits:
+            cpu: 1
+            memory: 2Gi
+          requests:
+            cpu: 10m
+            memory: 100Mi
+      volumes:
+      # Temp folder to host downloaded plugins
+      - name: plugin-volume
+        emptyDir: {}
+      - name: metabase-data
+        emptyDir: {}
+      - hostPath:
+          path: /usr/share/zoneinfo/Asia/Calcutta
+        name: time

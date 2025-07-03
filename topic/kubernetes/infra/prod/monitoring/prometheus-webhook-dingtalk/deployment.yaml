@@ -15,8 +15,8 @@ spec:
       labels:
         app: prometheus-webhook-dingtalk
     spec:
-      nodeSelector:
-        type: pfgc-ops-prod-prometheus
+      #nodeSelector:
+      #  type: node-ops
       containers:
       - args:
         - --web.listen-address=:8060
@@ -64,42 +64,42 @@ spec:
         - mountPath: /config/
           name: conf
           readOnly: true
-      - image: axistools/nginx-ldap:1.23.2-alpine
-        imagePullPolicy: Always
-        name: nginx-ldap
-        resources:
-          limits:
-            cpu: 200m
-            memory: 200Mi
-          requests:
-            cpu: 10m
-            memory: 10Mi
-        stdin: true
-        tty: true
-        volumeMounts:
-        - mountPath: /etc/nginx/nginx.conf
-          name: nginx-conf
-          subPath: nginx.conf
-        - mountPath: /etc/nginx/conf.d/
-          name: nginx-app-conf
-      imagePullSecrets:
-      - name: docker-secret
+      #- image: axistools/nginx-ldap:1.23.2-alpine
+      #  imagePullPolicy: Always
+      #  name: nginx-ldap
+      #  resources:
+      #    limits:
+      #      cpu: 200m
+      #      memory: 200Mi
+      #    requests:
+      #      cpu: 10m
+      #      memory: 10Mi
+      #  stdin: true
+      #  tty: true
+      #  volumeMounts:
+      #  - mountPath: /etc/nginx/nginx.conf
+      #    name: nginx-conf
+      #    subPath: nginx.conf
+      #  - mountPath: /etc/nginx/conf.d/
+      #    name: nginx-app-conf
+      #imagePullSecrets:
+      #- name: docker-secret
       volumes:
       - configMap:
           defaultMode: 420
           name: prometheus-webhook-dingtalk-config
         name: conf
-      - configMap:
-          defaultMode: 420
-          items:
-          - key: nginx.conf
-            path: nginx.conf
-          name: dingtalk-nginx-ldap
-        name: nginx-conf
-      - configMap:
-          defaultMode: 420
-          items:
-          - key: app.conf
-            path: app.conf
-          name: dingtalk-nginx-ldap
-        name: nginx-app-conf
+      #- configMap:
+      #    defaultMode: 420
+      #    items:
+      #    - key: nginx.conf
+      #      path: nginx.conf
+      #    name: dingtalk-nginx-ldap
+      #  name: nginx-conf
+      #- configMap:
+      #    defaultMode: 420
+      #    items:
+      #    - key: app.conf
+      #      path: app.conf
+      #    name: dingtalk-nginx-ldap
+      #  name: nginx-app-conf

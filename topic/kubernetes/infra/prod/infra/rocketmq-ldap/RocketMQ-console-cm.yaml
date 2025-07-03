@@ -1,0 +1,69 @@
+# https://kubernetes.io/docs/concepts/configuration/configmap/
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-mq-console
+  namespace: infra
+data:
+  default.conf: |-
+    server {
+        listen       80;
+        server_name  localhost;
+
+        location ~ \.(gif|jpg|png|css|js|svg|woff2|html|json|query)$ {
+            proxy_pass http://mqconsole;
+        }
+
+        location / {
+            proxy_pass http://mqconsole/;
+            auth_ldap    "Forbidden";
+            auth_ldap_servers   localdir;
+        }
+
+        error_page   500 502 503 504  /50x.html;
+        location = /50x.html {
+            root   /usr/share/nginx/html;
+        }
+    }
+  nginx.conf: |-
+    user  nginx;
+    worker_processes  auto;
+
+    error_log  /var/log/nginx/error.log warn;
+    pid        /var/run/nginx.pid;
+
+    events {
+        worker_connections  1024;
+    }
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log  /var/log/nginx/access.log  main;
+
+        sendfile        on;
+
+        keepalive_timeout  65;
+
+        proxy_ignore_client_abort on;
+
+        upstream mqconsole {
+            server localhost:8180;
+        }
+
+        ldap_server localdir {
+          url ldap://freeipa.cici.com:389/cn=users,cn=accounts,dc=game,dc=com?uid?sub?(&(objectClass=*));
+          binddn "uid=rc.ops,cn=users,cn=accounts,dc=game,dc=com";
+          binddn_passwd "rc-ops!@QWE=sf#t61";
+          #group_attribute memberuid;
+          #group_attribute_is_dn on;
+          #require valid_user;
+          #max_down_retries 3;
+        }
+        include /etc/nginx/conf.d/*.conf;
+    }

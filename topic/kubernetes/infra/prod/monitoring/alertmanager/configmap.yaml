@@ -30,19 +30,19 @@ data:
         match_re:
           severity: warning
           dbtype: "db.*"
-      - receiver: 'ciciname-webhook-critical'
+      - receiver: 'webhook-critical'
         group_wait: 10s
         group_interval: 30s
         repeat_interval: 30m
         match_re:
-          team: "ciciname.*"
+          team: "rc.*"
           severity: critical
-      - receiver: 'ciciname-webhook-warning'
+      - receiver: 'webhook-warning'
         group_wait: 10s
         group_interval: 30s
         repeat_interval: 30m
         match_re:
-          team: "ciciname.*"
+          team: "rc.*"
           severity: warning
       - receiver: 'domain-webhook-warning'
         group_wait: 10s
@@ -55,42 +55,41 @@ data:
         group_by: ['alertname']
         match_re:
           alertname: ".*"
+          #severity: "(?!info).*"
 
     receivers:
     - name: "db-webhook-p1"
       webhook_configs:
-      #- url: 'http://aws-webhook-svc/api/aws/feishu/db-webhook-p1/send'
-      - url: 'http://aws-webhook-svc/api/aws/feishu/default-receiver/send'
+      #- url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/db-webhook-p1/send'
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
         send_resolved: true
     - name: "db-webhook-p2"
       webhook_configs:
-      #- url: 'http://aws-webhook-svc/api/aws/feishu/db-webhook-p2/send'
-      - url: 'http://aws-webhook-svc/api/aws/feishu/default-receiver/send'
+      #- url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/db-webhook-p2/send'
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
         send_resolved: true
-    - name: "ciciname-webhook-warning"
+    - name: "webhook-warning"
       webhook_configs:
-      #- url: 'http://aws-webhook-svc/api/aws/feishu/rlhy-webhook-warning/send'
-      - url: 'http://aws-webhook-svc/api/aws/feishu/default-receiver/send'
+      #- url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/business-webhook-warning/send'
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
         send_resolved: true
-    - name: "ciciname-webhook-critical"
+    - name: "webhook-critical"
       webhook_configs:
-      #- url: 'http://aws-webhook-svc/api/aws/feishu/rlhy-webhook-critical/send'
-      - url: 'http://aws-webhook-svc/api/aws/feishu/default-receiver/send'
+      #- url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/business-webhook-critical/send'
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
         send_resolved: true
-      - send_resolved: false
-        url: 'http://aws-webhook-svc/api/aws/oncall'
     - name: "domain-webhook-warning"
       webhook_configs:
-      #- url: 'http://aws-webhook-svc/api/aws/feishu/domain-webhook-warning/send'
-      - url: 'http://aws-webhook-svc/api/aws/feishu/default-receiver/send'
+      #- url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/domain-webhook-warning/send'
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
         send_resolved: true
     - name: "default-receiver"
       webhook_configs:
-      - url: 'http://aws-webhook-svc/api/aws/feishu/default-receiver/send'
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
         send_resolved: false
 
     inhibit_rules:
-      - soucicinamee_match:
+      - source_match:
           severity: 'critical'
         target_match:
           severity: 'warning'
