@@ -1,5 +1,5 @@
-#apiversion: v1
-#kind: serviceaccount
+#apiVersion: v1
+#kind: ServiceAccount
 #metadata:
 #  name: cluster-readonly
 #  namespace: kube-system
@@ -28,6 +28,12 @@ rules:
   - pods/exec
   verbs:
   - create
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - delete
 - apiGroups:
   - ""
   resources:
@@ -82,11 +88,7 @@ rules:
 #- apiGroups:
 #  - apps
 #  resources:
-#  - deployments
-#  - deployments/rollback
 #  - deployments/scale
-#  - statefulsets
-#  - replicasets
 #  verbs:
 #  - update
 - apiGroups:
@@ -146,4 +148,3 @@ subjects:
 - kind: ServiceAccount
   name: cluster-readonly
   namespace: kube-system
-
