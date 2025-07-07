@@ -83,6 +83,7 @@ data:
         action: keep
       kubernetes_sd_configs:
       - role: endpoints
+      #- role: endpointslice  # 使用新版 API
         kubeconfig_file: ""
         follow_redirects: true
 
@@ -103,7 +104,8 @@ data:
         replacement: $1
         action: keep
       kubernetes_sd_configs:
-      - role: endpoints
+      #- role: endpoints
+      - role: endpointslice
         kubeconfig_file: ""
         follow_redirects: true
 
@@ -309,6 +311,33 @@ data:
         replacement: $1
         action: replace
 
+    - job_name: 'ingress-nginx-endpoints'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - ingress-nginx-prod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scheme]
+        action: replace
+        target_label: __scheme__
+        regex: (https?)
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: prometheus-server
+        action: drop
+
     #Dynamic discovery
 
     - job_name: kubernetes-service-endpoints
@@ -319,7 +348,7 @@ data:
       scheme: http
       follow_redirects: true
       kubernetes_sd_configs:
-      - role: endpoints
+      - role: endpointslice
         kubeconfig_file: ""
         follow_redirects: true
         namespaces:
@@ -382,6 +411,12 @@ data:
         target_label: controller_kind
         replacement: $1
         action: replace
+      # 确保标签规则兼容 EndpointSlice
+      - source_labels: [__meta_kubernetes_endpointslice_address_target_kind, __meta_kubernetes_endpointslice_address_target_name]
+        separator: ;
+        regex: Pod;(.*)
+        target_label: pod
+        replacement: ${1}
 
     - job_name: kubernetes-pods
       honor_timestamps: true
@@ -403,10 +438,10 @@ data:
           - kube-public
           - kube-system
           - monitoring
-          - staging-b-a
-          - staging-b-b
-          - b-a
-          - b-b
+          - staging-a-b
+          - staging-a-c
+          - a-b
+          - a-c
       relabel_configs:
       - source_labels: [__meta_kubernetes_pod_container_name]
         regex: "filebeat.*|skywalking-sidecar"
@@ -497,10 +532,10 @@ data:
           - kube-public
           - kube-system
           - monitoring
-          - staging-b-a
-          - staging-b-b
-          - b-a
-          - b-b
+          - staging-a-b
+          - staging-a-c
+          - a-b
+          - a-c
       relabel_configs:
       - source_labels: [__meta_kubernetes_pod_container_name]
         regex: "filebeat.*"
@@ -555,6 +590,7 @@ data:
         regex: Pending|Succeeded|Failed|Completed
         action: drop
 
+
     #Addon
     - job_name: node-exporter
       honor_timestamps: true
@@ -598,33 +634,6 @@ data:
         target_label: instance_type
         replacement: $1
         action: replace
-
-    - job_name: 'ingress-nginx-endpoints'
-      kubernetes_sd_configs:
-      - role: pod
-        namespaces:
-          names:
-          - ingress-nginx-prod
-      relabel_configs:
-      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
-        action: keep
-        regex: true
-      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scheme]
-        action: replace
-        target_label: __scheme__
-        regex: (https?)
-      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
-        action: replace
-        target_label: __metrics_path__
-        regex: (.+)
-      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
-        action: replace
-        target_label: __address__
-        regex: ([^:]+)(?::\d+)?;(\d+)
-        replacement: $1:$2
-      - source_labels: [__meta_kubernetes_service_name]
-        regex: prometheus-server
-        action: drop
 
     - job_name: blackbox-exporter
       honor_timestamps: true
@@ -671,11 +680,7 @@ data:
         modelue: [http_2xx]
       static_configs:
       - targets:
-          - https://whot365.com
-          - https://gitlab-rc.realmjackpot.com
-          - https://b-a-admin.cashb-apro.in
-          - https://b-b-admin.cashb-apro.in
-          - https://s.b-axking.in
+          - https://gitlab.cici.com
         labels:
           product_line: public
       relabel_configs:
@@ -695,18 +700,13 @@ data:
       static_configs:
       - targets:
           - https://gitlab.cici.com
-          - https://kubenacos.cici.com/nacos/#/login
-          #- wss://b-a.cashb-apro.in
+          - https://acos.cici.com/nacos/#/login
         labels:
           product_line: public
       - targets:
-          - http://b-a-gateway-2.b-a:9002/api/health/check
+          - http://a-b-gateway-2.a-b:9002/api/health/check
         labels:
-          product_line: b-a
-      - targets:
-          - http://b-b-admin.b-b:38888/actuator/health
-        labels:
-          product_line: b-b
+          product_line: a-b
       relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
@@ -719,7 +719,7 @@ data:
     - job_name: redis-exporter-targets
       static_configs:
       - targets:
-        - redis://prod-b-a-redis.xxx.com:6379
+        - redis://a-b-redis.xxx.com:6379
         labels:
           dbtype: "db-redis"
       metrics_path: /scrape
@@ -736,7 +736,7 @@ data:
       - targets:
         - "10.0.224.4:9100"
         labels:
-          business: b-a
+          business: a-b
           svc: Services
           type: mysql-master-slave
           service: "mysql-prod"
@@ -744,7 +744,7 @@ data:
       - targets:
         - "10.0.224.184:9100"
         labels:
-          business: b-b
+          business: a-c
           svc: Services
           type: mysql-master-slave
           service: "mysql-prod"
@@ -769,7 +769,7 @@ data:
       - targets:
         - "10.0.224.4:9104"
         labels:
-          business: b-a
+          business: a-b
           svc: Services
           type: mysql-master-slave
           service: "mysql-prod"
@@ -777,7 +777,7 @@ data:
       - targets:
         - "10.0.224.184:9104"
         labels:
-          business: b-b
+          business: a-c
           svc: Services
           type: mysql-master-slave
           service: "mysql-prod"
