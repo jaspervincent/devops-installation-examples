@@ -29,11 +29,17 @@ grep -ri "${C_Name}" *
 echo "Query AWS AK SK"
 grep -ri 'AWS_ACCESS_KEY_ID' *
 grep -ri 'AWS_SECRET_ACCESS_KEY' *
-
+grep -rE '\bAKIA[A-Za-z0-9]{12,40}\b' *
 
 echo "Query Aliyun AK"
 grep -ri 'Ali_Key' *
 grep -ri 'Ali_Secret' *
+grep -rE '\bLTAI[A-Za-z0-9]{12,30}\b' *
+
+grep -rE '\bAKID[A-Za-z0-9]{13,40}\b' * #腾讯云
+grep -rE '\bJDC_[0-9A-Z]{25,40}\b' * #京东云
+grep -rE '\b(?:AKLT|AKTP)[a-zA-Z0-9]{35,50}\b' * #火山引擎
+grep -rE '\bAKLT[a-zA-Z0-9\_\-]{16,28}\b' *  #金山云
 
 echo "Query Password"
 grep -ri 'passwd' *
