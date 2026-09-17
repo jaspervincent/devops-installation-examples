@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yace-config
+  namespace: monitoring
+data:
+  config.yml: |
+    apiVersion: v1alpha1
+    sts-region: ap-southeast-1
+    discovery:
+      exportedTagsOnMetrics:
+        AWS/RDS: [Name, Env]
+        AWS/ElastiCache: [Name, Env]
+      jobs:
+        - type: AWS/RDS
+          regions: [ap-southeast-1]
+          period: 300
+          length: 600
+          metrics:
+            - { name: CPUUtilization,      statistics: [Average, Maximum] }
+            - { name: FreeableMemory,      statistics: [Average, Minimum] }
+            - { name: FreeStorageSpace,    statistics: [Average, Minimum] }
+            - { name: DatabaseConnections, statistics: [Average, Maximum] }
+            - { name: ReadLatency,         statistics: [Average, Maximum] }
+            - { name: WriteLatency,        statistics: [Average, Maximum] }
+            - { name: ReadIOPS,            statistics: [Average] }
+            - { name: WriteIOPS,           statistics: [Average] }
+            - { name: ReplicaLag,          statistics: [Average, Maximum] }
+            - { name: BurstBalance,        statistics: [Minimum] }
+            - { name: DiskQueueDepth,      statistics: [Average] }
+            - { name: SwapUsage, statistics: [Average] }
+
+        - type: AWS/ElastiCache
+          regions: [ap-southeast-1]
+          period: 300
+          length: 600
+          metrics:
+            - { name: CPUUtilization,        statistics: [Average, Maximum] }
+            - { name: EngineCPUUtilization,  statistics: [Average, Maximum] }
+            - { name: DatabaseMemoryUsagePercentage, statistics: [Average, Maximum] }
+            - { name: CurrConnections,       statistics: [Average, Maximum] }
+            - { name: ReplicationLag,        statistics: [Average, Maximum] }
+            - { name: SwapUsage,             statistics: [Average] }
+            - { name: Evictions,      statistics: [Sum, Average] }
+            - { name: CacheHits,      statistics: [Sum] }
+            - { name: CacheMisses,    statistics: [Sum, Average] }
+            - { name: FreeableMemory, statistics: [Average, Minimum] }
+
+        # Amazon MQ（RabbitMQ / ActiveMQ）
+        - type: AWS/AmazonMQ
+          regions: [ap-southeast-1]
+          period: 300
+          length: 600
+          metrics:
+            - { name: CpuUtilization,    statistics: [Average, Maximum] }
+            - { name: SystemCpuUtilization,       statistics: [Average] }
+            - { name: RabbitMQMemUsed,            statistics: [Average] }
+            - { name: RabbitMQMemLimit,           statistics: [Average] }
+            - { name: RabbitMQDiskFree,           statistics: [Average] }
+            - { name: RabbitMQDiskFreeLimit,      statistics: [Average] }
+            - { name: RabbitMQFdUsed,             statistics: [Average] }
+            - { name: MessageCount,               statistics: [Average] }
+            - { name: MessageReadyCount,          statistics: [Average] }
+            - { name: MessageUnacknowledgedCount, statistics: [Average] }
+            - { name: PublishRate,                statistics: [Average] }
+            - { name: ConfirmRate,                statistics: [Average] }
+            - { name: AckRate,                    statistics: [Average] }
+            - { name: ConsumerCount,              statistics: [Average] }
+            - { name: ConnectionCount,            statistics: [Average] }
+            - { name: ChannelCount,               statistics: [Average] }
+            - { name: QueueCount,                 statistics: [Average] }
+            - { name: ExchangeCount,              statistics: [Average] }
+
+        # 若 MQ 实为 MSK，改用 AWS/Kafka（CpuUser / KafkaDataLogsDiskUsed / SumOffsetLag ...）
+        # 若为 SQS，改用 AWS/SQS（ApproximateNumberOfMessagesVisible / ApproximateAgeOfOldestMessage）
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yace
+  namespace: monitoring
+  labels: { app: yace }
+spec:
+  replicas: 1          # 必须为 1：多副本会重复调 CloudWatch API，费用翻倍
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: yace }
+  template:
+    metadata:
+      labels: { app: yace }
+      annotations:
+        checksum/config: "REPLACE_ME"   # 改配置后改此值触发滚动，或 kubectl rollout restart
+    spec:
+      serviceAccountName: yace
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: yace
+          image: quay.io/prometheuscommunity/yet-another-cloudwatch-exporter:v0.62.1
+          args:
+            - -config.file=/etc/yace/config.yml
+            - -listen-address=:5000
+            - -scraping-interval=300      # 后台轮询 CloudWatch 的周期（秒）
+          ports:
+            - { name: metrics, containerPort: 5000 }
+          volumeMounts:
+            - { name: config, mountPath: /etc/yace, readOnly: true }
+          resources:
+            requests: { cpu: 50m,  memory: 128Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /metrics, port: metrics }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: config
+          configMap: { name: yace-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yace
+  namespace: monitoring
+  labels: { app: yace }
+spec:
+  selector: { app: yace }
+  ports:
+    - { name: metrics, port: 5000, targetPort: metrics }
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: yace
+  namespace: monitoring
+  labels:
+    app: yace
+    release: kps        # 需匹配 kube-prometheus-stack 的 release 名，否则不被发现
+spec:
+  selector:
+    matchLabels: { app: yace }
+  endpoints:
+    - port: metrics
+      interval: 60s
+      scrapeTimeout: 30s

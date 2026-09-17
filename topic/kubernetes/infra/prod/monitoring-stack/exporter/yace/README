@@ -1,0 +1,4 @@
+
+创建了 sa: yace，通注释拿到 cloudwatch 权限。
+
+kubectl apply -f yace.yaml

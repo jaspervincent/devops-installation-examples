@@ -1,7 +1,9 @@
 #https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/additional-scrape-config.md
-#https://prometheus-operator.dev/docs/operator/api/
+#https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.PrometheusSpec
 
 touch prometheus-additional.yaml
 kubectl -n monitoring create secret generic additional-configs --from-file=prometheus-additional.yaml
 # Update
-kubectl -n monitoring create secret generic additional-configs --from-file=prometheus-additional.yaml --dry-run -oyaml|kubectl replace -f-
+kubectl -n monitoring create secret generic additional-configs \
+    --from-file=prometheus-additional.yaml \
+    --dry-run=client -oyaml|kubectl replace -f-

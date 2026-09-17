@@ -53,7 +53,7 @@ spec:
       #- name: docker-secret
       containers:
       - name: redis-exporter
-        image: oliver006/redis_exporter:v1.61.0
+        image: oliver006/redis_exporter:v1.91.1
         imagePullPolicy: IfNotPresent
         env:
         - name: REDIS_PASSWORD_FILE
@@ -87,7 +87,7 @@ metadata:
   labels:
     app.kubernetes.io/name: redis-exporter
     app.kubernetes.io/instance: redis-exporter
-    app.kubernetes.io/version: "1.61.0"
+    app.kubernetes.io/version: "1.91.1"
     app.kubernetes.io/component: exporter
     release: prometheus
 spec:
