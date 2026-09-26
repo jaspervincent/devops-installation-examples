@@ -1,0 +1,44 @@
+groups:
+- name: DomainSSL
+  interval: 1m
+  rules:
+  - alert: 证书将在 30 天内过期
+    expr: |
+      (probe_ssl_earliest_cert_expiry - time()) / 86400 < 30
+      and on(instance) probe_success == 1
+    for: 10m
+    labels: {severity: warning, level: 3, team: domain-alert}
+    annotations:
+      summary: "证书将在 30 天内过期"
+      description: '{{ $labels.instance }} 证书剩余 {{ $value | printf "%.1f" }} 天'
+  - alert: 证书即将过期
+    expr: |
+      (probe_ssl_earliest_cert_expiry - time()) / 86400 < 7
+      and on(instance) probe_success == 1
+    for: 10m
+    labels: {severity: critical, level: 1, team: domain-alert}
+    annotations:
+      summary: "证书即将过期"
+      description: '{{ $labels.instance }} 证书剩余 {{ $value | printf "%.1f" }} 天'
+- name: DomainURL
+  interval: 15s
+  rules:
+  - alert: URL地址不可用
+    expr: probe_http_status_code{job=~".*"} != 200
+    #expr: probe_http_status_code{job=~".*"} == 200
+    for: 2m
+    labels: {severity: critical, level: 1, team: domain-alert}
+    annotations:
+      description: '{{$labels.instance}} http 状态码 {{ $value }}'
+      summary: URL地址不可用
+  - alert: URL响应超时
+    #整体响应时间 probe_duration_seconds
+    expr: probe_duration_seconds{job=~".*"} > 5 and on(instance, job) probe_success == 1
+    #expr: probe_duration_seconds{job=~".*"} < 5 and on(instance, job) probe_success == 1
+    # 只想看 HTTP 请求本身、排除 DNS
+    #expr: sum by (instance,job,bussiness,serverty)(probe_http_duration_seconds) > 5 and on(instance, job) probe_success == 1
+    for: 1m
+    labels: {severity: critical, level: 1, team: domain-alert}
+    annotations:
+      description: '{{ $labels.instance }} 响应时间 {{ $value | humanizeDuration }}'
+      summary: URL响应超时

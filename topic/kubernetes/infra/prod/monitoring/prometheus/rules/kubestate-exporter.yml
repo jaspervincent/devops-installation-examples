@@ -1,0 +1,10 @@
+groups:
+- name: KubestateExporter
+  rules:
+    - alert: Pod 重启
+      expr: increase(kube_pod_container_status_restarts_total{container!="filebeat-sidecar"}[15m]) > 0
+      for: 2m
+      labels: {severity: warning, level: 2, team: ops}
+      annotations:
+        summary: Pod 发生重启({{ $labels.container }})
+        description: "{{ $labels.pod }} 容器 {{ $labels.container }}近 15 分钟重启 VALUE = {{ $value | printf  \"%.0f\" }}次\n  LABELS = {{ $labels }}"

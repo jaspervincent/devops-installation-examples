@@ -1,0 +1,34 @@
+groups:
+- name: KubernetesStorage
+  interval: 1m
+  rules:
+  - alert: 挂载磁盘使用率过高
+    expr: |
+      (
+        kubelet_volume_stats_used_bytes{job="kubelet"}
+          / kubelet_volume_stats_capacity_bytes{job="kubelet"}
+      ) > 0.90
+      and kubelet_volume_stats_used_bytes{job="kubelet"} > 0
+    for: 10m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: '挂载磁盘使用率过高'
+      description: '{{ $labels.cloud }}.{{ $labels.cluster}}: 
+        PVC {{ $labels.persistentvolumeclaim }}(命名空间 {{ $labels.namespace }})已使用 {{ $value |
+        humanizePercentage }}'
+  # 纯预测:按近 6 小时趋势，预计 4 天内写满(不看当前用量高低)
+  - alert: 挂载磁盘预计将写满
+    expr: |
+      (
+        kubelet_volume_stats_used_bytes{job="kubelet"}
+          / kubelet_volume_stats_capacity_bytes{job="kubelet"}
+      )
+      and predict_linear(kubelet_volume_stats_available_bytes{job="kubelet"}[6h], 4 * 24 * 3600) < 0
+      and kubelet_volume_stats_used_bytes{job="kubelet"} > 0
+    for: 1h
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: '挂载磁盘预计将写满'
+      description: '{{ $labels.cloud }}.{{ $labels.cluster}}: 
+        PVC {{ $labels.persistentvolumeclaim }}(命名空间 {{ $labels.namespace }})当前已使用 {{ $value |
+        humanizePercentage }}，按近 6 小时趋势预计 4 天内写满'

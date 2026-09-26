@@ -59,7 +59,7 @@ color() {
 }
 
 check() {
-  if [ $ID = 'ubuntu' ] && [[ ${VERSION} =~ 2[024].04 ]]; then
+  if [ $ID = 'ubuntu' ] && [[ ${VERSION} =~ 2[026].04 ]]; then
     return
   else
     color "不支持此操作系统，退出！" 1
