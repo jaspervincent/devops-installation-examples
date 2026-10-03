@@ -24,6 +24,11 @@ loki:
   # 两者不会冲突：nginx 看到上游已带 content-encoding 就不会再压一次。
   frontend:
     compress_responses: true
+    # approx_topk 的中间结果是 count-min sketch 向量，frontend 与 querier
+    # 之间用默认的 json 编码传不了，必须 protobuf。
+    # 它和 limits_config.shard_aggregations 是**一对**，少一个 approx_topk 就不可用。
+    # 只影响内部通信，不改 HTTP API 的响应格式。
+    encoding: protobuf
   commonConfig:
     replication_factor: 3
   # 零 PVC 方案全靠这个开关保证优雅重启（滚动更新 / drain）不丢未 flush 的 chunk。
@@ -72,6 +77,15 @@ loki:
     max_line_size_truncate: true
     max_entries_limit_per_query: 10000
     max_query_series: 500
+    # 开启 approx_topk：topk 的**内层聚合**会先 materialize 所有序列，
+    # 高基数字段（完整 URI、客户端 IP）一超过上面的 max_query_series
+    # 整条查询就报错 "maximum number of series (500) reached"。
+    # approx_topk 用概率结构算 topk，不受这个上限约束。
+    #
+    # 它依赖查询分片——本栈已满足：parallelise_shardable_queries=true，
+    # schema 是 tsdb v13。查运行实例 /config 可确认。
+    shard_aggregations:
+    - approx_topk
     max_query_parallelism: 16
     max_query_length: 721h
   compactor:

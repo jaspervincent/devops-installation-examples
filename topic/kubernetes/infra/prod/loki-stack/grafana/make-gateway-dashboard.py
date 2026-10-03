@@ -164,7 +164,10 @@ def stat(dec, unit="short", steps=None, novalue="0"):
     return {"fieldConfig": {"defaults": fc, "overrides": []},
             "options": {"reduceOptions": {"calcs": ["lastNotNull"]},
                         "colorMode": "value" if steps else "none",
-                        "graphMode": "area"}}
+                        # 关掉背景 sparkline：它用的是滑动窗口 + 默认配色，
+                        # 「传输流量」那个红色下降曲线会被误读成流量在掉，
+                        # 实际只是统计窗口在滑。要看趋势下面有专门的面板。
+                        "graphMode": "none"}}
 
 
 def row(pid, title, y, collapsed=False, children=None):
@@ -243,14 +246,64 @@ def table_endpoints():
            "Value #A": 4, "Value #B": 5, "Value #C": 6}
     rn = {"host": "域名", "method": "方法", "path": "接口",
           "Value #A": "请求数", "Value #B": "错误率", "Value #C": "P95"}
+    # 三列都做视觉编码，否则这张表只能逐格读数字，失去「扫一眼」的意义。
+    #
+    # P95 那列尤其需要：Grafana 按单元格自动选单位，会出现
+    # "20.30 ms / 805.60 ms / 1.43 s" 混排，比大小得心算换算。
+    # 加颜色背景之后大小由颜色承载，数字只是佐证。
+    #
+    # color-background 要求字段的 color.mode 是 thresholds，不设的话不着色。
     ov = [
+        {"matcher": {"id": "byName", "options": "请求数"},
+         "properties": [
+             {"id": "custom.cellOptions",
+              "value": {"type": "gauge", "mode": "gradient",
+                        "valueDisplayMode": "text"}},
+             {"id": "min", "value": 0},
+             # gauge 默认按**整个 frame** 的全局 min/max 刻度，而不是本字段的。
+             # 「噪声来源」表里字节数最大 2.5 MiB、条数最大 5970，
+             # 不加这行的话条数的 gauge 条是空的（实测截图确认）。
+             {"id": "fieldMinMax", "value": True},
+             {"id": "color", "value": {"mode": "continuous-BlPu"}},
+         ]},
         {"matcher": {"id": "byName", "options": "错误率"},
-         "properties": [{"id": "unit", "value": "percent"},
-                        {"id": "decimals", "value": 1},
-                        {"id": "noValue", "value": "0"}]},
+         "properties": [
+             {"id": "unit", "value": "percent"},
+             {"id": "decimals", "value": 1},
+             {"id": "noValue", "value": "0"},
+             {"id": "color", "value": {"mode": "thresholds"}},
+             {"id": "custom.cellOptions",
+              "value": {"type": "color-background", "mode": "gradient"}},
+             # 阈值同第一屏的「错误率」：按生产标准 1% 橙 / 5% 红
+             {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                 {"color": "green", "value": None},
+                 {"color": "orange", "value": 1},
+                 {"color": "red", "value": 5}]}},
+         ]},
         {"matcher": {"id": "byName", "options": "P95"},
-         "properties": [{"id": "unit", "value": "s"},
-                        {"id": "decimals", "value": 2}]},
+         "properties": [
+             {"id": "unit", "value": "s"},
+             {"id": "decimals", "value": 2},
+             {"id": "color", "value": {"mode": "thresholds"}},
+             {"id": "custom.cellOptions",
+              "value": {"type": "color-background", "mode": "gradient"}},
+             # 0.5s 橙、1s 红：网页接口超过 1 秒用户已经明显感觉到卡
+             {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                 {"color": "green", "value": None},
+                 {"color": "orange", "value": 0.5},
+                 {"color": "red", "value": 1}]}},
+         ]},
+        # 列宽：域名和方法是短字符串，固定住；省下的宽度留给接口路径
+        {"matcher": {"id": "byName", "options": "域名"},
+         "properties": [{"id": "custom.width", "value": 190}]},
+        {"matcher": {"id": "byName", "options": "方法"},
+         "properties": [{"id": "custom.width", "value": 80}]},
+        {"matcher": {"id": "byName", "options": "请求数"},
+         "properties": [{"id": "custom.width", "value": 180}]},
+        {"matcher": {"id": "byName", "options": "错误率"},
+         "properties": [{"id": "custom.width", "value": 110}]},
+        {"matcher": {"id": "byName", "options": "P95"},
+         "properties": [{"id": "custom.width", "value": 110}]},
     ]
     cfg = _table_base(idx, rn, ov)
     cfg["transformations"].append(
@@ -311,6 +364,38 @@ ERR_RATE = ('sum(count_over_time(%s | status =~ "[45].." [%s])) / '
             'sum(count_over_time(%s [%s])) * 100'
             % (SELL, RANGE_W, SELL, RANGE_W))
 
+# 客户端 IP。不写死 remote_addr：走 CDN / 负载均衡时它是代理的 IP，
+# 真实访客在 x_forwarded_for 里（格式是 "客户端, 代理1, 代理2"，第一段才是客户端）。
+#
+# sprig 的 default 是 default <默认值> <给定值>：给定值非空就用给定值。
+# 砍逗号用 regexReplaceAll——**LogQL 的模板函数表里没有 regexFind**
+# （实测报 function "regexFind" not defined），别照搬 sprig 文档。
+CLIENT = ('| label_format client=`{{ regexReplaceAll ",.*$" '
+          '(default .remote_addr .x_forwarded_for) "" }}`')
+
+# /24 网段，给合规场景用：客户端 IP 是个人数据，有留存限制时可以把 IP 那张
+# 面板整个删掉，这张仍能回答「流量主要来自哪些网络」。
+# 只处理 IPv4；IPv6 的地址不含点，正则不匹配，会原样留下。
+# 正则用字符类 [.] 而不是 \. ——这段文本要穿过「生成脚本 -> LogQL -> Go 模板」
+# 三层解析，反斜杠每层都要加倍，少一层就变成非法转义（踩过：
+# invalid template for label 'subnet'）。字符类没有这个问题。
+SUBNET = ('| label_format subnet=`{{ printf "%s.0/24" '
+          '(regexReplaceAll "[.][0-9]+$" .client "") }}`')
+
+# 状态码分档：200 -> 2xx。用 regexReplaceAll 把末两位换成 xx——
+# 不用 sprig 的 substr，因为 LogQL 的模板函数表不是 sprig 全集
+# （regexFind 就不存在，见坑位 58），只用已验证可用的。
+STATUS_CLASS = ('| label_format class=`{{ regexReplaceAll "[0-9][0-9]$" '
+                '.status "xx" }}`')
+
+# 四个档位固定配色，不让 Grafana 随机分配——红色必须永远是 5xx。
+CLASS_COLORS = [
+    {"matcher": {"id": "byName", "options": c},
+     "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": col}}]}
+    for c, col in (("2xx", "green"), ("3xx", "blue"),
+                   ("4xx", "orange"), ("5xx", "red"))
+]
+
 LOGS = {"options": {"showTime": True, "showLabels": False,
                     "wrapLogMessage": True, "prettifyLogMessage": True,
                     "sortOrder": "Descending", "enableLogDetails": True,
@@ -365,13 +450,18 @@ panels = [
           "按 remote_addr 去重。注意这是**连接来源 IP**——经过 CDN 或负载均衡时"
           "它是代理的 IP，真实客户端要看 x_forwarded_for 字段。", stat(0)),
 
-    panel(10, "请求趋势（按状态码）", "timeseries", {"h": 6, "w": 16, "x": 0, "y": 4},
-          [tgt('sum by (status) (count_over_time(%s [$__interval]))' % SEL,
-               "{{status}}")],
-          "按状态码堆叠的请求数直方图。分桶用 $__interval（= Grafana 的 step）"
-          "而不是速率窗口——后者是滑动窗口，相邻桶重叠会糊成一整块；"
-          "配面板级 interval 设最小步长，避免 step 太细变成密集栅栏。",
-          dict(BARS, interval="30s")),
+    panel(10, "请求趋势（按状态码档）", "timeseries",
+          {"h": 6, "w": 16, "x": 0, "y": 4},
+          [tgt('sum by (class) (count_over_time(%s %s [$__interval]))'
+               % (SEL, STATUS_CLASS), "{{class}}")],
+          "按状态码**档**（2xx/3xx/4xx/5xx）堆叠的请求数直方图。"
+          "不按具体状态码分：生产环境十几个码时图例会排成一长条、颜色也分不清；"
+          "想看具体码用顶部的「状态码」下拉筛。四个档固定配色，红色永远是 5xx。"
+          "分桶用 $__interval（= Grafana 的 step）而不是速率窗口——"
+          "后者是滑动窗口，相邻桶重叠会糊成一整块；配面板级 interval 设最小步长，"
+          "避免 step 太细变成密集栅栏。",
+          dict(BARS, interval="30s",
+               fieldConfig=dict(BARS["fieldConfig"], overrides=CLASS_COLORS))),
 
     panel(11, "按域名", "table", {"h": 6, "w": 8, "x": 16, "y": 4},
           [tgt('topk(%d, sum by (host) (count_over_time(%s [%s])))'
@@ -428,21 +518,49 @@ panels = [
 
     # ================ 折叠：流量来源与客户端 ================
     row(400, "流量来源与客户端", 21, collapsed=True, children=[
-        panel(30, "Top 来源页 (Referer)", "table", {"h": 8, "w": 8, "x": 0, "y": 22},
-              [tgt('topk(10, sum by (referer) (count_over_time(%s [%s])))'
+        panel(30, "Top 来源页 (Referer)", "table",
+              {"h": 8, "w": 12, "x": 0, "y": 22},
+              [tgt('approx_topk(10, sum by (referer) (count_over_time(%s [%s])))'
                    % (SEL, RANGE_W), None, qtype="instant")],
-              "流量从哪来。直接访问时 referer 是 \"-\" 或空。",
+              "流量从哪来。直接访问时 referer 是 \"-\" 或空。"
+              "用 approx_topk：这类字段在生产是无界的，普通 topk 的内层聚合"
+              "会先 materialize 全部序列，超过 max_query_series 整条查询报错。"
+              "代价是**结果为近似值**——排名可信，绝对数字别当精确值用。",
               table1("请求数", {"referer": "来源页"}, ["referer"])),
 
-        panel(31, "Top 客户端类型 (UA)", "table", {"h": 8, "w": 8, "x": 8, "y": 22},
-              [tgt('topk(10, sum by (user_agent) (count_over_time(%s [%s])))'
+        panel(31, "Top 客户端类型 (UA)", "table",
+              {"h": 8, "w": 12, "x": 12, "y": 22},
+              [tgt('approx_topk(10, sum by (user_agent) (count_over_time(%s [%s])))'
                    % (SEL, RANGE_W), None, qtype="instant")],
               "人还是爬虫、什么浏览器/SDK。UA 基数可能很高，已 topk 封顶。",
               table1("请求数", {"user_agent": "User-Agent"}, ["user_agent"])),
 
+        # ---- 客户端 IP：个人数据，合规场景下可整个删掉 ----
+        panel(33, "Top 客户端 IP", "table",
+              {"h": 8, "w": 12, "x": 0, "y": 30},
+              [tgt('approx_topk(10, sum by (client) (count_over_time(%s %s [%s])))'
+                   % (SEL, CLIENT, RANGE_W), None, qtype="instant")],
+              "访问量最大的客户端。取值优先用 x_forwarded_for 的第一段"
+              "（走 CDN / 负载均衡时它才是真实访客），为空才退回 remote_addr——"
+              "所以这张表在裸机和云上都不用改。"
+              "**客户端 IP 属于个人数据**：有留存或展示方面的合规要求时，"
+              "删掉这一个面板即可，下面的网段表仍能回答「流量来自哪些网络」。"
+              "高基数字段，已 topk(10) 封顶。",
+              table1("请求数", {"client": "客户端 IP"}, ["client"])),
+
+        panel(34, "Top 客户端网段 (/24)", "table",
+              {"h": 8, "w": 12, "x": 12, "y": 30},
+              [tgt('approx_topk(10, sum by (subnet) (count_over_time(%s %s %s [%s])))'
+                   % (SEL, CLIENT, SUBNET, RANGE_W), None, qtype="instant")],
+              "把客户端 IP 聚合到 /24 网段，**不落到个人**。"
+              "合规场景下用这张替代上面那张；平时也更适合看「流量集中在哪些网络」"
+              "——同一机房 / 同一出口的访问会自然归成一行。"
+              "只处理 IPv4：IPv6 地址不含点，正则不匹配，会原样显示。",
+              table1("请求数", {"subnet": "网段"}, ["subnet"])),
+
         panel(32, "Top 完整 URI（含查询串）", "table",
-              {"h": 8, "w": 8, "x": 16, "y": 22},
-              [tgt('topk(10, sum by (uri) (count_over_time(%s [%s])))'
+              {"h": 8, "w": 24, "x": 0, "y": 38},
+              [tgt('approx_topk(10, sum by (uri) (count_over_time(%s [%s])))'
                    % (SEL, RANGE_W), None, qtype="instant")],
               "和第一屏的接口表互补：那张剥掉了查询串，这张保留。"
               "想看「哪些参数组合被用得多」看这里。",
@@ -548,7 +666,12 @@ dashboard = {
 out = "/root/loki-stack/grafana/dashboard-gateway-access.json"
 open(out, "w").write(json.dumps(dashboard, ensure_ascii=False, indent=2))
 
-payload = {"dashboard": dashboard, "overwrite": True,
+# folderUid 必须显式给：不给的话 Grafana 会把看板放回 General
+# （实测 payload 不带这个字段，返回的 folderUid 是空串），
+# 文件夹级的权限配置就随之失效。看板归属属于部署配置，
+# 和看板内容一样应当由脚本持有，不靠手工拖拽维持。
+payload = {"dashboard": dashboard, "folderUid": "dev-visible",
+           "overwrite": True,
            "message": "gateway JSON access log 看板"}
 r = subprocess.run(
     ["curl", "-s", "--max-time", "30", "-u", AUTH,

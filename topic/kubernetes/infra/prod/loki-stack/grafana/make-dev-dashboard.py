@@ -511,7 +511,12 @@ dashboard = {
 out = "/root/loki-stack/grafana/dashboard-dev-troubleshoot.json"
 open(out, "w").write(json.dumps(dashboard, ensure_ascii=False, indent=2))
 
-payload = {"dashboard": dashboard, "overwrite": True,
+# folderUid 必须显式给：不给的话 Grafana 会把看板放回 General
+# （实测 payload 不带这个字段，返回的 folderUid 是空串），
+# 文件夹级的权限配置就随之失效。看板归属属于部署配置，
+# 和看板内容一样应当由脚本持有，不靠手工拖拽维持。
+payload = {"dashboard": dashboard, "folderUid": "dev-visible",
+           "overwrite": True,
            "message": "研发排障看板"}
 r = subprocess.run(
     ["curl", "-s", "--max-time", "30", "-u", AUTH,

@@ -336,7 +336,7 @@
           ]
         },
         "colorMode": "none",
-        "graphMode": "area"
+        "graphMode": "none"
       }
     },
     {
@@ -401,7 +401,7 @@
           ]
         },
         "colorMode": "value",
-        "graphMode": "area"
+        "graphMode": "none"
       }
     },
     {
@@ -446,7 +446,7 @@
           ]
         },
         "colorMode": "none",
-        "graphMode": "area"
+        "graphMode": "none"
       }
     },
     {
@@ -491,7 +491,7 @@
           ]
         },
         "colorMode": "none",
-        "graphMode": "area"
+        "graphMode": "none"
       }
     },
     {
@@ -536,12 +536,12 @@
           ]
         },
         "colorMode": "none",
-        "graphMode": "area"
+        "graphMode": "none"
       }
     },
     {
       "id": 10,
-      "title": "请求趋势（按状态码）",
+      "title": "请求趋势（按状态码档）",
       "type": "timeseries",
       "datasource": {
         "type": "loki",
@@ -560,12 +560,12 @@
             "type": "loki",
             "uid": "efzm3ndgkowsga"
           },
-          "expr": "sum by (status) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__interval]))",
+          "expr": "sum by (class) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | label_format class=`{{ regexReplaceAll \"[0-9][0-9]$\" .status \"xx\" }}` [$__interval]))",
           "queryType": "range",
-          "legendFormat": "{{status}}"
+          "legendFormat": "{{class}}"
         }
       ],
-      "description": "按状态码堆叠的请求数直方图。分桶用 $__interval（= Grafana 的 step）而不是速率窗口——后者是滑动窗口，相邻桶重叠会糊成一整块；配面板级 interval 设最小步长，避免 step 太细变成密集栅栏。",
+      "description": "按状态码**档**（2xx/3xx/4xx/5xx）堆叠的请求数直方图。不按具体状态码分：生产环境十几个码时图例会排成一长条、颜色也分不清；想看具体码用顶部的「状态码」下拉筛。四个档固定配色，红色永远是 5xx。分桶用 $__interval（= Grafana 的 step）而不是速率窗口——后者是滑动窗口，相邻桶重叠会糊成一整块；配面板级 interval 设最小步长，避免 step 太细变成密集栅栏。",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -579,7 +579,68 @@
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "2xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "3xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "4xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "5xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -750,6 +811,36 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "请求数"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "fieldMinMax",
+                "value": true
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-BlPu"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "错误率"
             },
             "properties": [
@@ -764,6 +855,39 @@
               {
                 "id": "noValue",
                 "value": "0"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 5
+                    }
+                  ]
+                }
               }
             ]
           },
@@ -780,6 +904,99 @@
               {
                 "id": "decimals",
                 "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.5
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "域名"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 190
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "方法"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "请求数"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "错误率"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P95"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
               }
             ]
           }
@@ -1053,7 +1270,7 @@
           },
           "gridPos": {
             "h": 8,
-            "w": 8,
+            "w": 12,
             "x": 0,
             "y": 22
           },
@@ -1064,11 +1281,11 @@
                 "type": "loki",
                 "uid": "efzm3ndgkowsga"
               },
-              "expr": "topk(10, sum by (referer) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
+              "expr": "approx_topk(10, sum by (referer) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
               "queryType": "instant"
             }
           ],
-          "description": "流量从哪来。直接访问时 referer 是 \"-\" 或空。",
+          "description": "流量从哪来。直接访问时 referer 是 \"-\" 或空。用 approx_topk：这类字段在生产是无界的，普通 topk 的内层聚合会先 materialize 全部序列，超过 max_query_series 整条查询报错。代价是**结果为近似值**——排名可信，绝对数字别当精确值用。",
           "options": {
             "showHeader": true,
             "cellHeight": "sm",
@@ -1143,8 +1360,8 @@
           },
           "gridPos": {
             "h": 8,
-            "w": 8,
-            "x": 8,
+            "w": 12,
+            "x": 12,
             "y": 22
           },
           "targets": [
@@ -1154,7 +1371,7 @@
                 "type": "loki",
                 "uid": "efzm3ndgkowsga"
               },
-              "expr": "topk(10, sum by (user_agent) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
+              "expr": "approx_topk(10, sum by (user_agent) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
               "queryType": "instant"
             }
           ],
@@ -1224,6 +1441,186 @@
           ]
         },
         {
+          "id": 33,
+          "title": "Top 客户端 IP",
+          "type": "table",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 30
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "approx_topk(10, sum by (client) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | label_format client=`{{ regexReplaceAll \",.*$\" (default .remote_addr .x_forwarded_for) \"\" }}` [$__range])))",
+              "queryType": "instant"
+            }
+          ],
+          "description": "访问量最大的客户端。取值优先用 x_forwarded_for 的第一段（走 CDN / 负载均衡时它才是真实访客），为空才退回 remote_addr——所以这张表在裸机和云上都不用改。**客户端 IP 属于个人数据**：有留存或展示方面的合规要求时，删掉这一个面板即可，下面的网段表仍能回答「流量来自哪些网络」。高基数字段，已 topk(10) 封顶。",
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false,
+              "reducer": [
+                "sum"
+              ],
+              "fields": ""
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "transformations": [
+            {
+              "id": "labelsToFields",
+              "options": {
+                "mode": "columns"
+              }
+            },
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "Time": 0,
+                  "client": 1,
+                  "Value #A": 2,
+                  "Value": 3
+                },
+                "renameByName": {
+                  "client": "客户端 IP",
+                  "Value #A": "请求数",
+                  "Value": "请求数"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "请求数",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 34,
+          "title": "Top 客户端网段 (/24)",
+          "type": "table",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 30
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "approx_topk(10, sum by (subnet) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | label_format client=`{{ regexReplaceAll \",.*$\" (default .remote_addr .x_forwarded_for) \"\" }}` | label_format subnet=`{{ printf \"%s.0/24\" (regexReplaceAll \"[.][0-9]+$\" .client \"\") }}` [$__range])))",
+              "queryType": "instant"
+            }
+          ],
+          "description": "把客户端 IP 聚合到 /24 网段，**不落到个人**。合规场景下用这张替代上面那张；平时也更适合看「流量集中在哪些网络」——同一机房 / 同一出口的访问会自然归成一行。只处理 IPv4：IPv6 地址不含点，正则不匹配，会原样显示。",
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false,
+              "reducer": [
+                "sum"
+              ],
+              "fields": ""
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "transformations": [
+            {
+              "id": "labelsToFields",
+              "options": {
+                "mode": "columns"
+              }
+            },
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "Time": 0,
+                  "subnet": 1,
+                  "Value #A": 2,
+                  "Value": 3
+                },
+                "renameByName": {
+                  "subnet": "网段",
+                  "Value #A": "请求数",
+                  "Value": "请求数"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "请求数",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
           "id": 32,
           "title": "Top 完整 URI（含查询串）",
           "type": "table",
@@ -1233,9 +1630,9 @@
           },
           "gridPos": {
             "h": 8,
-            "w": 8,
-            "x": 16,
-            "y": 22
+            "w": 24,
+            "x": 0,
+            "y": 38
           },
           "targets": [
             {
@@ -1244,7 +1641,7 @@
                 "type": "loki",
                 "uid": "efzm3ndgkowsga"
               },
-              "expr": "topk(10, sum by (uri) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
+              "expr": "approx_topk(10, sum by (uri) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
               "queryType": "instant"
             }
           ],

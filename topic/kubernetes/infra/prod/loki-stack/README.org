@@ -362,6 +362,48 @@ python3 grafana/make-events-dashboard.py    # Kubernetes 事件
 | Gateway 访问日志  | =/d/loki-gateway-access=   | nginx-gateway-fabric 的 JSON 访问日志            | 1h       |
 | *Kubernetes 事件* | =/d/loki-k8s-events=       | 集群事件：OOM / 调度失败 / 拉镜像失败 / 探针失败 | 30m      |
 
+*** 日志总览看板（2026-10-04 重构）
+*运维视角的全局总览* ：采集链路健康吗、容量多大、谁在刷日志。
+定位某个服务的具体问题用「研发排障」，看网关流量用「Gateway 访问日志」。
+
+默认可见高度 *52 格 -> 26 格* 。
+
+| 位置   | 面板                                                    |
+|--------+---------------------------------------------------------|
+| 第一屏 | 日志速率 / *写入速率* / 上报节点数 (1h) / *错误占比*     |
+| 第一屏 | *日志量直方图（按级别堆叠）*                            |
+| 第一屏 | 按命名空间的速率 + 按节点的速率                         |
+| 第一屏 | *噪声来源 Top* ——服务 / 命名空间 / 来源 / 条数 / 字节数 / 错误率 |
+| 折叠行 | 错误专区：错误速率（按命名空间）/ kubelet 错误 / 错误日志流 |
+| 折叠行 | 系统日志：systemd unit Top 表                           |
+| 折叠行 | 实时日志流                                              |
+| 折叠行 | 说明 / 怎么读这个看板                                   |
+
+**** 「写入速率」是容量口径，「日志速率」是条数口径
+原先四个统计全是条数口径，但 *容量规划看的是字节不是条数* ——
+一条 nginx 访问日志和一条 Java 堆栈差两个数量级，按条数估容量会严重失真。
+新面板用 =bytes_rate= 。做保留策略和存储预算时看这个。
+
+**** 「噪声来源 Top」是这个看板独有的价值
+*谁在刷日志、谁最占存储* 。三条查询（条数 / 字节数 / 错误率）
+按 =app= + =namespace= + =source= 合并成一张表，条数列用 gauge、
+错误率列用颜色背景。带字节数列是因为运维关心的是存储成本，不是行数。
+
+#+begin_quote
+*这张表不受顶部「级别」下拉影响* 。它回答「谁在刷、谁健康」，
+按级别收窄之后错误率列会恒为 100%，失去意义。
+#+end_quote
+
+**** 「错误日志速率」改成了「错误占比」
+绝对速率随流量规模变，比例不变。阈值按实测基线定：本环境常态约 11%
+（demo 应用故意造错误），所以 20% 转橙、40% 转红。
+*换环境必须重新量基线* ，见坑位 19。
+
+**** 「上报节点数 (1h)」保持原样，不要改
+它固定用 1 小时窗口，不跟顶部的速率窗口—— *这是刻意的* 。
+实测 10 分钟窗口里只有 3 个节点出现（空闲的 control-plane 节点那段时间
+一条日志都没有），用短窗口会误报红色。这是本看板唯一的采集链路存活信号。
+
 *** 级别（所有看板统一）
 四个看板顶部都有「级别」下拉。 *它筛的是 =detected_level= ，不是索引标签 =level= 。*
 
@@ -499,6 +541,55 @@ talk《Fool-Proof Kubernetes Dashboards for Sleep-Deprived Oncalls》。
 
 *刻意不带对象名* ：带上会让一次探针抖动炸成几十行。具体是哪个对象，
 到下面的「Warning 事件流」看原文。
+
+*** 可读性优化（2026-10-04）
+**** 汇总表加了「对象数」列，高度从 6 改到 10
+=h=6= 时实测 *只显示 4 行，而查询返回 7 行* —— =FailedScheduling= 和
+=BackOff= 正好被截在视野外，而那恰恰是这个看板存在的理由。
+见坑位 65。
+
+新增的「对象数」列补的是 *影响面* ：
+
+| 原因             | 命名空间    | 次数 | 对象数 | 读法                   |
+|------------------+-------------+------+--------+------------------------|
+| Unhealthy        | loki        |  231 |     32 | 面上反复抖动           |
+| FailedScheduling | loki        |    8 |      8 | 8 个 Pod 各失败一次    |
+| BackOff          | kube-system |    1 |      1 | 单点                   |
+
+*光看次数分不出这两种形态* 。用嵌套聚合算：先按 =name= 分一层，
+再 =count= 掉它。
+
+#+begin_src logql
+count by (reason, kind, namespace)
+  (sum by (reason, kind, namespace, name) (count_over_time(... [$__range])))
+#+end_src
+
+「次数」列用 gauge 编码并 *必须配 =fieldMinMax: true=* ——次数(231) 和
+对象数(32) 量级差得远，不加的话条会失真（坑位 64）。
+该列 *不设固定宽度* ，让它吸收剩余空间；其余列定宽，否则某一列会吃掉全部余量。
+
+**** 事件流用 line_format 重排
+原始行是完整 logfmt， =objectAPIversion= / =objectRV= / =eventRV= /
+=reportinginstance= 这些字段对人没用却占掉一半行宽，把真正要看的
+=name= / =reason= / =msg= 挤到行尾。
+
+#+begin_src logql
+| line_format `{{.reason}}  {{.kind}}/{{.name}}  [{{.namespace}}]  {{.msg}}`
+#+end_src
+
+重排后：
+
+#+begin_example
+Unhealthy  Pod/cilium-operator-8bbdf97bb-xqchw  [kube-system]  Readiness probe failed: ...
+FailedScheduling  Pod/loki-distributor-...  [loki]  0/5 nodes are available: 2 node(s) ...
+#+end_example
+
+原始字段仍可展开查看（面板开着 =enableLogDetails=），只是不再占据行宽。
+「全部事件」面板同样处理。
+
+**** 事件趋势改直方图写法
+分桶用 =$__interval= 配面板级 =interval: "5m"= ，和另外三个看板统一。
+原先用速率窗口（滑动）在 24h 范围下画出来是几根几乎看不见的细线。
 
 *** 窗口语义
 「Warning 事件数」「受影响对象」「最频繁故障原因」「Warning 事件汇总」
@@ -837,6 +928,69 @@ quantile_over_time(0.95, ... | unwrap request_time [5m]) by (host)
 
 =upstream_response_time= 在请求没走到上游时是空串，所以必须先
 =| upstream_response_time != ""= 再 =unwrap= ，否则 unwrap 报错。
+
+**** 接口表的三列视觉编码
+三列都做了视觉编码，否则这张表只能逐格读数字，失去「扫一眼」的意义：
+
+| 列     | 编码方式                | 阈值                      |
+|--------+-------------------------+---------------------------|
+| 请求数 | gauge 单元格（占比横条）| —                         |
+| 错误率 | 颜色背景                | 1% 橙 / 5% 红（同第一屏） |
+| P95    | 颜色背景                | 0.5s 橙 / 1s 红           |
+
+*P95 那列尤其需要颜色* 。Grafana 按单元格自动选单位，不着色时会出现
+=20.30 ms / 805.60 ms / 1.43 s= 混排，比大小得在脑子里换算——
+正好毁掉表格存在的意义。加颜色之后大小由颜色承载，数字只是佐证。
+
+#+begin_quote
+=color-background= 要求该字段的 =color.mode= 是 =thresholds= ，
+不设的话不报错、也不着色，静默失效。
+#+end_quote
+
+**** 请求趋势按状态码「档」不按具体码
+图例是 =2xx= / =3xx= / =4xx= / =5xx= 四档，*固定配色，红色永远是 5xx* 。
+按具体状态码分的话，生产环境十几个码会让图例排成一长条、颜色也分不清；
+想看具体码用顶部的「状态码」下拉筛。
+
+分档用 =label_format= 把末两位换成 =xx= ：
+
+#+begin_src logql
+| label_format class=`{{ regexReplaceAll "[0-9][0-9]$" .status "xx" }}`
+#+end_src
+
+#+begin_quote
+不用 sprig 的 =substr= —— LogQL 的模板函数表不是 sprig 全集
+（=regexFind= 就不存在，见坑位 58），只用验证过的函数。
+#+end_quote
+
+**** 几个 stat 关掉了背景 sparkline
+=graphMode: "none"= 。那个背景趋势用的是滑动窗口加默认配色，
+「传输流量」显示成一条红色下降曲线，容易被误读成「流量在掉」，
+实际只是统计窗口在滑。要看趋势下面有专门的面板。
+
+**** 客户端 IP 与网段：一个给排查，一个给合规
+「流量来源与客户端」折叠行里有两张互补的表：
+
+| 面板              | 取值                      | 用途                           |
+|-------------------+---------------------------+--------------------------------|
+| Top 客户端 IP     | 精确到单个 IP             | 排查：谁在刷、谁在扫           |
+| Top 客户端网段    | 聚合到 /24                | 合规：只到网络，不落到个人     |
+
+*客户端 IP 属于个人数据* 。有留存或展示方面的合规要求时， *直接删掉
+「Top 客户端 IP」这一个面板即可* ——网段那张仍然能回答「流量主要来自哪些网络」，
+同一机房 / 同一出口的访问会自然归成一行。两张表拆开正是为了让这个删除是
+一刀切的，不用去改查询。
+
+IP 取值 *不写死 =remote_addr=* ：走 CDN 或负载均衡时它是代理的 IP，
+真实访客在 =x_forwarded_for= 里（格式 =客户端, 代理1, 代理2= ，第一段才是客户端）。
+
+#+begin_src logql
+| label_format client=`{{ regexReplaceAll ",.*$" (default .remote_addr .x_forwarded_for) "" }}`
+| label_format subnet=`{{ printf "%s.0/24" (regexReplaceAll "[.][0-9]+$" .client "") }}`
+#+end_src
+
+有 =x_forwarded_for= 就取它的第一段，没有就退回 =remote_addr= ——
+裸机和云上都不用改看板。网段只处理 IPv4：IPv6 地址不含点，正则不匹配，原样显示。
 
 **** 错误率阈值按生产标准定，本环境会一直红
 *1% 转橙、5% 转红* ——这是生产环境的合理标准。
@@ -1663,6 +1817,65 @@ snippet 不会直接出现在 nginx.conf 里，而是被放进
 限流值是 *护栏* 不是瓶颈，留了 2-3 个数量级余量。真正的风险不是数据量，而是
 *标签基数* ： =pod= 标签会随 ReplicaSet 滚动不断产生新 stream。若要加标签，
 务必避免把高基数字段（request_id、trace_id、IP）做成标签。
+
+*** 丢弃 Loki 自身的噪声日志（2026-10-04 新增）
+*Loki 自身日志曾占全栈 84~96%* 。实测过滤前后：
+
+| | loki 命名空间 | =level=info= | 2xx 访问日志 |
+|---+---+---+---|
+| 过滤前 | 87,410 行/小时 | 大量 | 30,054 行/小时 |
+| *过滤后* | *~2,740 行/小时* | *0* | *0* |
+
+降幅 *96.9%* 。 =level=error= / =level=warn= 全部保留（约 2,381 行/小时）。
+
+**** 那 30,054 行访问日志是个自我放大的回路
+它们来自 =loki-gateway= 的 nginx： *每收到一次 push 就记一行访问日志，
+这行日志又被采集、又变成一次 push* 。写入量越大它越大——生产环境这比
+查询日志更该砍。
+
+**** 实现：Alloy 侧丢弃，不是 Loki 侧
+过滤放在 =alloy/config.alloy= 的 =loki.process "cri"= 里，
+=stage.multiline= *之后* 。
+
+放在采集侧而不是 Loki 侧，是因为这样 *零 ingest 成本* ——根本不进 Loki。
+放在 multiline 之后，是因为放之前的话带堆栈的 error 行会被保留、
+它的续行却因为不含 =level=error= 被丢掉，把堆栈截断。
+
+#+begin_src alloy
+stage.match {
+  selector            = "{namespace=\"loki\"} !~ \"^level=(error|warn)|] +[45][0-9][0-9] \""
+  action              = "drop"
+  drop_counter_reason = "loki_self_noise"
+}
+#+end_src
+
+保留两类：=^level=(error|warn)= 和网关访问日志里的 4xx/5xx。
+=]= 和状态码之间是 *两个空格* ，所以用 =] += 而不是单个空格。
+
+#+begin_quote
+正则里刻意 *一个反斜杠都没有* ：这段文本要穿过 HCL 字符串和 LogQL 两层，
+反斜杠层数极易算错（本项目已踩过两次，见坑位 59）。
+#+end_quote
+
+**** 怎么恢复全量采集
+=config.alloy= 里这段用 =BEGIN= / =END= 注释标记包着。整段注释掉即可——
+它是 *纯加法阶段* ，不改动管道里任何其他环节。
+
+#+begin_src sh
+cd /root/loki-stack/alloy
+# 把 BEGIN 到 END 之间整段注释掉（或只注释里面的 stage.match）
+./apply-alloy-config.sh
+#+end_src
+
+*这个开关实测验证过双向可逆* ：注释后 =level=info= 和 2xx 访问日志立刻回来
+（2 分钟内分别 1,377 / 979 行），取消注释后又归零。
+
+**** 代价
+=metrics.go= 的查询耗时日志在 Loki 里查不到了（约占 29%）。
+它仍在容器里， =kubectl logs deploy/loki-querier= 随时能看。
+
+查 Loki 自己的查询日志本来就有循环依赖——Loki 挂了就查不了，
+实时排查用 =kubectl logs= 更直接；历史回溯真正需要的 error/warn 全部保留。
 
 *** 保留策略（分级）
 全局默认 28 天，另有两条按流覆盖的规则，配置在 =values-distributed.yaml=
@@ -2654,6 +2867,168 @@ kubectl -n loki logs deploy/loki-ingester --since=2m | grep -ic accessdenied
     做除法得到的那条查询（错误率）有 *两个流选择器* ，不能交给
     =with_level()= 自动插级别过滤——它只处理第一个 ={}= 之后的位置。
     要么手工把过滤拼进两边并传 =level=False= ，要么该面板放弃级别过滤。
+    #+end_quote
+
+58. *LogQL 的模板函数表不等于 sprig 全集——=regexFind= 不存在。*
+    想取 =x_forwarded_for= 的第一段时第一反应是 =regexFind "^[^,]+" .x_forwarded_for= ，
+    Loki 直接拒绝：
+
+    #+begin_example
+    invalid template for label 'client': template: label:1:
+    function "regexFind" not defined
+    #+end_example
+
+    逐个试下来：=if/else= 、=default= 、=regexReplaceAll= 、=printf= 都可用，
+    =regexFind= 不可用。想取前缀就反过来用 =regexReplaceAll= 砍掉后缀：
+    =regexReplaceAll ",.*$" <值> ""= 。
+
+    #+begin_quote
+    =default= 的参数顺序是 =default <默认值> <给定值>= （给定值非空才用它），
+    所以「有 x_forwarded_for 就用它，否则 remote_addr」写成
+    =default .remote_addr .x_forwarded_for= ，别写反。
+    #+end_quote
+
+60. *=topk= 的内层聚合受 =max_query_series= 限制，高基数字段会让整条查询失败。*
+    =topk(10, sum by (uri) (...))= 看起来只要十条，但 *内层的 =sum by= 必须先把
+    所有序列算出来* ，超过 =max_query_series= （本栈设的 500）整条查询直接报错：
+
+    #+begin_example
+    maximum number of series (500) reached for a single query
+    #+end_example
+
+    这个问题在测试环境**不会暴露**——接口就那么几个。我是造了带随机
+    =?echo_time=NNN= 的流量之后才撞上的，而生产环境每个 =?id=12345=
+    都会制造一个新序列，「Top 完整 URI」和「Top 客户端 IP」这类面板必然中招。
+
+    Loki 3.3 起有专门的 =approx_topk= 解决它（count-min sketch 算近似 topk，
+    不 materialize 全部序列）。 *已在本栈开启* ，但它需要 *两个设置配套* ——
+    只开一个会以非常误导的方式失败：
+
+    #+begin_src yaml
+    loki:
+      limits_config:
+        shard_aggregations:
+        - approx_topk
+      frontend:
+        encoding: protobuf      # 少了这个 -> 语法错，不是「未启用」
+    #+end_src
+
+    #+begin_quote
+    *只开 =shard_aggregations= 时的报错极具欺骗性* ：开启 *前* 报
+    =approx_topk is not enabled= （说明解析器认识它），开启 *后* 反而报
+    =parse error at line 1, col 1: syntax error: unexpected IDENTIFIER=
+    ——看着像 Loki 根本不支持这个函数，实际只是缺 protobuf 编码。
+    approx_topk 的中间结果是 count-min sketch 向量，frontend 与 querier
+    之间用默认的 json 编码传不了。我在这上面绕了一圈才找到。
+    #+end_quote
+
+    使用约束（官方文档）： *只支持 instant 查询* ；不支持外层 grouping，
+    要靠内层 =sum by= ；结果是 *近似值* ，排名可信但绝对数字别当精确值用，
+    精度受 =max_count_min_sketch_heap_size= （默认 10000）影响。
+
+    本栈已把「流量来源与客户端」里五个无界字段（referer / user_agent /
+    完整 uri / 客户端 IP / 网段）换成了 =approx_topk= 。
+    *第一屏的接口表没换* ：path 已归一化、基数被 API 面本身限住；
+    而且那张表的错误率和 P95 两条查询没有 topk，换了也没用。
+
+    #+begin_quote
+    *教训更一般*：给看板造验证数据时，要造出**高基数**的那一面，
+    不只是造出「有数据」。按真实接口画像造的流量能验证颜色阈值，
+    但只有带随机参数的流量才能暴露基数问题。
+    #+end_quote
+
+65. *表格高度要按「查询可能返回多少行」定，不是按「当下有多少行」定。*
+    事件看板的「Warning 事件汇总」我一度把高度从 =h=8= 压到 =h=6= ——
+    理由是当时只有 4 行数据，看着空。
+
+    后来查询返回 7 行，面板 *只显示前 4 行* ， =FailedScheduling= 和
+    =BackOff= 被截在视野外。 *而那正是这个看板存在的理由* ：
+    一眼扫过去会得出「只有探针抖动」的错误结论。
+
+    #+begin_quote
+    这类截断 *不报错、不留痕迹* ：面板看起来正常，只是下面还有内容。
+    查询校验发现不了（查询完全正确），布局重叠检查也发现不了（没有重叠）。
+    *只有拿「查询实际返回多少行」和「面板能显示多少行」对一下才能发现。*
+
+    经验值：=cellHeight: sm= 下一行约占 1 个 grid 单位，加表头约 1.5 个。
+    要显示 N 行就给 =h >= N + 2= 。
+    #+end_quote
+
+64. *表格里的 gauge 单元格默认按**整个 frame** 的全局 min/max 刻度。*
+    「噪声来源 Top」的「条数」列 gauge 条全是空的，连数值最大的那一行也是。
+
+    根因不是数据错，而是刻度： *Grafana 的 gauge 默认取 frame 里所有数值
+    字段的全局 min/max* ，不是该字段自己的。这张表里「字节数」最大 2.5 MiB
+    （约 260 万），「条数」最大才 5970——占全局 max 的 0.2%，条自然看不见。
+
+    修法是给该字段加 =fieldMinMax: true= ，让它按自己的范围刻度。
+
+    #+begin_quote
+    Gateway 的接口表有同一个隐患但 *没暴露* ：那里「请求数」恰好是最大的
+    数值字段，全局 max 等于它自己的 max，所以碰巧是对的。
+    *一张表里只要有量级差得远的数值列，就要给 gauge 列显式加这一行。*
+
+    这个缺陷查询校验发现不了（查询完全正确），只有截图能看出来。
+    #+end_quote
+
+63. *过滤 Loki 自身日志时，匹配级别的正则必须用 =^= 锚定。*
+    第一版写成 =!~ "level=(error|warn)"= ，漏了 18 条 =level=info= 。
+    原因是 *ruler 在打印它自己的告警规则* ，规则的 LogQL 文本里字面含
+    =level=error= ：
+
+    #+begin_example
+    level=info ... caller=compat.go:68 rule_name=LokiObjectStorageDenied
+      query="(sum(count_over_time({namespace=\"loki\"} |~ \"^level=error\" ...
+    #+end_example
+
+    不锚定的正则匹配的是「 *提到* 某关键词的行」，不是「 *级别是* 该关键词的行」。
+    加 =^= 之后归零。这和「告警自激陷阱」是同一个坑的两种表现。
+
+    #+begin_quote
+    更一般的判据： *凡是拿 Loki 自身日志当输入的规则/过滤器，都要假设
+    日志里会出现规则自己的文本* ——告警规则、看板查询、过滤表达式都会被
+    组件原样打印出来。
+    #+end_quote
+
+61. *滚动重启后几分钟内，最近的数据看起来「丢了」——那是 index-gateway 还没同步。*
+    给 Loki 做完 =helm upgrade= 立刻查询，我看到 6 小时只剩 7 条、24 小时 23 条，
+    而重启前有四千多条。 *我据此判断「滚动重启丢数据」，那是错的* ——
+    五分钟后再查，2375 条全回来了。
+
+    真实情况：旧 ingester 优雅退出时确实把 chunk 刷进了 S3、也上传了 tsdb 索引
+    （S3 里能看到文件名还是旧 Pod 名的索引对象），但 *index-gateway 是独立
+    Deployment、缓存在 emptyDir 上* ，重启后要重新下载并周期性同步才能看到
+    新索引。这段窗口里 chunk 在 S3、索引查不到 = 查询返回空。
+
+    #+begin_quote
+    *判断方法*：别只看查询结果。去 S3 看 =loki_index_<period>/= 下有没有
+    刚上传的 =*.tsdb.gz= （文件名带上传它的 ingester Pod 名），
+    有就说明数据在，等索引同步即可。
+    #+end_quote
+
+62. *看板查询校验脚本必须按面板声明的 =queryType= 选端点。*
+    我的校验脚本一律用 =query_range= ，于是 =approx_topk= 这种
+    *只支持 instant* 的函数被整整误报了 5 条失败——而面板本身是好的。
+
+    反过来也有坑：logs 类查询只能走 =query_range= ，用 instant 会报
+    =log queries are not supported as an instant query type= 。
+
+    #+begin_quote
+    这是第三次因为校验脚本自身的缺陷产生假信号了（前两次：漏了内置变量
+    =$__range= 、漏了 =$scope= 导致假阴性）。 *校验脚本和被校验对象一样需要被校验* 。
+    #+end_quote
+
+59. *正则里尽量用字符类 =[.]= 代替 =\.= 。*
+    =subnet= 那个模板的正则要穿过「生成脚本 → LogQL 查询串 → Go 模板的字符串
+    字面量」三层解析，反斜杠每层都要加倍。我按两层算，到 Go 模板那层就成了
+    非法转义，报 =invalid template for label 'subnet'= 。
+
+    与其数反斜杠，不如用字符类—— =[.]= 和 =\.= 语义完全一样，
+    但整条链路里一个反斜杠都没有，不可能算错。
+
+    #+begin_quote
+    这类「模板套模板」的地方还有 =line_format= 、Alloy 的 =stage.template= 。
+    判断方法：报错里显示的正则如果比你写的少一层反斜杠，就是层数算少了。
     #+end_quote
 
 57. *=label_format= 配 sprig 函数可以在查询时做字段归一化。*

@@ -129,6 +129,47 @@ loki.process "cri" {
     max_lines     = 200
   }
 
+  // ======================= BEGIN 丢弃 Loki 自身的噪声日志 =======================
+  //
+  // 【想恢复全量采集 Loki 自身日志，把本段整个注释掉即可】——它是纯加法阶段，
+  // 不改动管道里任何其他环节。注释后跑 ./apply-alloy-config.sh 生效。
+  //
+  // 为什么要丢：实测 Loki 自身日志占全栈 84~96%，1 小时 87410 行，
+  // 而其中 level=error + level=warn 只有 2381 行（2.7%）。
+  //
+  // 构成（1h 实测）：
+  //   level=info 的 metrics.go / engine.go 查询日志   约 29%
+  //   loki-gateway 的 nginx 访问日志（2xx）           30054 行
+  //   其余 info 级组件日志                            余下大部分
+  //
+  // 那 30054 行访问日志尤其该砍：**它是自我放大的回路**——每收到一次 push
+  // 就记一行访问日志，这行日志又被采集、又变成一次 push。写入量越大它越大。
+  //
+  // 保留什么：
+  //   ^level=(error|warn)       —— 所有组件的问题日志，排障要的就是这些。
+  //                                **必须用 ^ 锚定**：不锚定的话 ruler 打印
+  //                                自己的告警规则时，规则文本里字面含
+  //                                `level=error`，整行会被当成错误日志留下来
+  //                                （实测漏了 18 条）。同「告警自激陷阱」。
+  //   ] +[45][0-9][0-9]         —— 网关访问日志里的 4xx/5xx（push 失败要看见）
+  //                                注意 ] 和状态码之间是**两个空格**，所以用 ` +`
+  //
+  // 正则里刻意一个反斜杠都没有：这段文本要穿过 HCL 字符串和 LogQL 两层，
+  // 反斜杠层数极易算错（本项目已踩过两次）。
+  //
+  // 代价：metrics.go 的查询耗时日志在 Loki 里查不到了。它仍在容器里，
+  // 实时排查用 `kubectl logs deploy/loki-querier` 更直接；
+  // 而且查 Loki 自己的查询日志本来就有循环依赖（Loki 挂了就查不了）。
+  //
+  // 【注意】alloy validate **不会**校验下面这个 selector（见本文件开头的教训），
+  // 改动它之后必须用 ./apply-alloy-config.sh 应用并看运行时日志。
+  stage.match {
+    selector            = "{namespace=\"loki\"} !~ \"^level=(error|warn)|] +[45][0-9][0-9] \""
+    action              = "drop"
+    drop_counter_reason = "loki_self_noise"
+  }
+  // ======================== END 丢弃 Loki 自身的噪声日志 ========================
+
   // 日志来源分类：pod（应用容器） vs systemd（宿主机系统服务）
   stage.static_labels {
     values = {

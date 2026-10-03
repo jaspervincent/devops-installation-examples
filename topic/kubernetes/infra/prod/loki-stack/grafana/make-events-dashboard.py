@@ -87,7 +87,15 @@ LIST_H = 8          # 列表面板高度；插入后其后所有面板下移这�
 LIST_N = 30         # topk 封顶。不封顶的话批量重启这类场景会刷出几百行
 
 
-def list_table(value_label, renames, order):
+# 事件流的行重排模板。事件是 logfmt，原始行里 objectAPIversion / objectRV /
+# eventRV / reportinginstance / sourcecomponent 这些字段对人没用，却占掉一半
+# 行宽，把真正要看的 name / reason / msg 挤到行尾。
+# 原始字段仍可展开查看（面板开着 enableLogDetails），只是不再占据行宽。
+LINE_FMT = ('| line_format `{{.reason}}  {{.kind}}/{{.name}}  '
+            '[{{.namespace}}]  {{.msg}}`')
+
+
+def list_table(value_label, renames, order, gauge=False):
     """表格面板的 options / fieldConfig / transformations。
 
     **不能用 bargauge**：实测它只画出一个无名的条，显示最后一个序列的值。
@@ -114,7 +122,20 @@ def list_table(value_label, renames, order):
         "options": {"showHeader": True, "cellHeight": "sm",
                     "footer": {"show": False, "reducer": ["sum"], "fields": ""}},
         "fieldConfig": {"defaults": {"unit": "short", "custom": {"align": "auto"}},
-                        "overrides": []},
+                        # gauge 单元格必须配 fieldMinMax：Grafana 默认按整个
+                        # frame 的全局 min/max 刻度，量级差得远时条会看不见
+                        # （见坑位 64）。
+                        "overrides": [
+                            {"matcher": {"id": "byName", "options": value_label},
+                             "properties": [
+                                 {"id": "custom.cellOptions",
+                                  "value": {"type": "gauge", "mode": "gradient",
+                                            "valueDisplayMode": "text"}},
+                                 {"id": "min", "value": 0},
+                                 {"id": "fieldMinMax", "value": True},
+                                 {"id": "color",
+                                  "value": {"mode": "continuous-BlPu"}}]}]
+                        if gauge else []},
         "transformations": [
             {"id": "labelsToFields", "options": {"mode": "columns"}},
             {"id": "merge", "options": {}},
@@ -123,6 +144,60 @@ def list_table(value_label, renames, order):
                                            "renameByName": rn}},
             {"id": "sortBy", "options": {"fields": {},
                                          "sort": [{"field": value_label, "desc": True}]}},
+        ],
+    }
+
+
+
+def table_warn_summary():
+    """Warning 汇总表：两条查询（次数 / 对象数）按 reason+kind+namespace 合并。
+
+    「对象数」用嵌套聚合算：先按 name 分一层，再 count 掉它，
+    得到「这个组合涉及多少个不同对象」。
+
+    次数列的 gauge **必须加 fieldMinMax**：Grafana 默认按整个 frame 的全局
+    min/max 刻度，次数(231) 和对象数(32) 量级差得远时条会失真（见坑位 64）。
+    """
+    idx = {"Time": 0, "reason": 1, "kind": 2, "namespace": 3,
+           "Value #A": 4, "Value #B": 5}
+    rn = {"reason": "原因", "kind": "类型", "namespace": "命名空间",
+          "Value #A": "次数", "Value #B": "对象数"}
+    ov = [
+        {"matcher": {"id": "byName", "options": "次数"},
+         "properties": [
+             {"id": "custom.cellOptions",
+              "value": {"type": "gauge", "mode": "gradient",
+                        "valueDisplayMode": "text"}},
+             {"id": "min", "value": 0},
+             {"id": "fieldMinMax", "value": True},
+             # 次数列**不设固定宽度**：让它吸收剩余空间，gauge 条越长越好读。
+             # 其余几列都定宽，否则某一列会吃掉所有剩余宽度。
+             {"id": "color", "value": {"mode": "continuous-BlPu"}}]},
+        {"matcher": {"id": "byName", "options": "对象数"},
+         "properties": [{"id": "custom.width", "value": 110},
+                        {"id": "noValue", "value": "—"}]},
+        # 原因列不设宽的话会吃掉所有剩余宽度（实测占了约一半面板）
+        {"matcher": {"id": "byName", "options": "原因"},
+         "properties": [{"id": "custom.width", "value": 260}]},
+        {"matcher": {"id": "byName", "options": "类型"},
+         "properties": [{"id": "custom.width", "value": 110}]},
+        {"matcher": {"id": "byName", "options": "命名空间"},
+         "properties": [{"id": "custom.width", "value": 200}]},
+    ]
+    return {
+        "options": {"showHeader": True, "cellHeight": "sm",
+                    "footer": {"show": False, "reducer": ["sum"], "fields": ""}},
+        "fieldConfig": {"defaults": {"unit": "short",
+                                     "custom": {"align": "auto"}},
+                        "overrides": ov},
+        "transformations": [
+            {"id": "labelsToFields", "options": {"mode": "columns"}},
+            {"id": "merge", "options": {}},
+            {"id": "organize", "options": {"excludeByName": {"Time": True},
+                                           "indexByName": idx,
+                                           "renameByName": rn}},
+            {"id": "sortBy", "options": {"fields": {},
+                                         "sort": [{"field": "次数", "desc": True}]}},
         ],
     }
 
@@ -266,7 +341,7 @@ panels = [
           "不是面上的问题。",
           stat()),
 
-    panel(3, "最频繁故障原因", "stat", {"h": 4, "w": 5, "x": 8, "y": 0},
+    panel(3, "最频繁故障原因", "stat", {"h": 4, "w": 4, "x": 8, "y": 0},
           [tgt('topk(1, sum by (reason) (count_over_time(%s [%s])))' % (WARN, RANGE_W),
                "{{reason}}")],
           "Warning 里出现次数最多的 reason，直接显示名字而不是数值。"
@@ -274,43 +349,57 @@ panels = [
           "这里用 range 查询不是 instant——instant 下 stat 显示成 Value #A，见 stat_text()。",
           stat_text()),
 
+    # 分桶用 $__interval（= Grafana 的 step）而不是速率窗口：后者是滑动窗口，
+    # 24h 范围配 5m 窗口画出来是几根几乎看不见的细线。配面板级 interval
+    # 设最小步长，避免 step 太细变成密集栅栏。和另外三个看板统一。
     panel(4, "事件趋势（Normal / Warning）", "timeseries",
-          {"h": 4, "w": 11, "x": 13, "y": 0},
-          [tgt('sum by (level) (count_over_time(%s [%s]))' % (TREND, W), "{{level}}")],
-          "按「速率窗口」分桶的事件条数，堆叠显示 Normal 与 Warning 的构成。"
+          {"h": 4, "w": 12, "x": 12, "y": 0},
+          [tgt('sum by (level) (count_over_time(%s [$__interval]))' % TREND,
+               "{{level}}")],
+          "按级别堆叠的事件条数直方图，分桶宽度自动跟随视图。"
           "不受顶部「级别」下拉影响——它本身就是按级别分组的，再被收窄就只剩一种颜色。",
-          BARS),
+          dict(BARS, interval="5m")),
 
-    panel(5, "Warning 事件汇总", "table", {"h": 6, "w": 24, "x": 0, "y": 4},
+    # h=10 不是 h=6。实测 h=6 只显示 4 行，而查询返回 7 行——
+    # FailedScheduling 和 BackOff 正好被截在视野外，而那恰恰是这个看板
+    # 存在的理由。表格高度要按**查询可能返回的行数**定，不是按当下的行数。
+    panel(5, "Warning 事件汇总", "table", {"h": 10, "w": 24, "x": 0, "y": 4},
           [tgt('topk(%d, sum by (reason, kind, namespace) (count_over_time(%s [%s])))'
-               % (LIST_N, WARN, RANGE_W), None, qtype="instant")],
-          "排障从这里开始：哪一类原因、什么对象类型、哪个命名空间，各多少次。"
+               % (LIST_N, WARN, RANGE_W), None, qtype="instant"),
+           tgt('count by (reason, kind, namespace) '
+               '(sum by (reason, kind, namespace, name) (count_over_time(%s [%s])))'
+               % (WARN, RANGE_W), None, ref="B", qtype="instant")],
+          "排障从这里开始：哪一类原因、什么对象类型、哪个命名空间，各多少次、"
+          "涉及多少个对象。"
+          "**「对象数」补的是影响面**：231 次 / 32 个对象是面上的问题，"
+          "8 次 / 1 个对象是单点抖动，光看次数分不出来。"
           "按 reason+kind+namespace 聚合而**不带对象名**——带上会让一次探针抖动"
           "炸成几十行；具体是哪个对象去下面的事件流看。最多 30 行。"
           "这张表取代了原先四个写死 reason 的「常见故障速查」面板，"
           "新出现的故障类型会自动进来，不用改脚本。",
-          list_table("次数", {"reason": "原因", "kind": "类型",
-                              "namespace": "命名空间"},
-                     ["reason", "kind", "namespace"])),
+          table_warn_summary()),
 
-    panel(6, "Warning 事件流", "logs", {"h": 12, "w": 24, "x": 0, "y": 10},
-          [tgt(WARN)],
-          "Warning 事件原文。点单条左侧箭头展开，logfmt 解析出的字段"
+    panel(6, "Warning 事件流", "logs", {"h": 10, "w": 24, "x": 0, "y": 14},
+          [tgt("%s %s" % (WARN, LINE_FMT))],
+          "Warning 事件原文，已用 line_format 重排成「原因 类型/对象 [命名空间] 说明」。"
+          "原始行里 objectAPIversion / objectRV / eventRV / reportinginstance "
+          "这些字段对人没用却占掉一半行宽，把真正要看的挤到了行尾。"
+          "点单条左侧箭头展开，logfmt 解析出的字段"
           "（reason / kind / name / reportingcontroller / msg）都在详情里，"
           "可直接点击做过滤。",
           LOGS),
 
     # ================ 折叠：全部事件 ================
-    row(200, "全部事件（含 Normal）", 22, collapsed=True, children=[
+    row(200, "全部事件（含 Normal）", 24, collapsed=True, children=[
         panel(10, "全部事件", "logs", {"h": 14, "w": 24, "x": 0, "y": 24},
-              [tgt(SEL)],
+              [tgt("%s %s" % (SEL, LINE_FMT))],
               "包含 Normal。受顶部全部过滤器约束，含「级别」下拉。"
               "Normal 占九成左右（Scheduled / Pulled / Created 等例行动作）。",
               LOGS),
     ]),
 
     # ================ 折叠：维度分析 ================
-    row(300, "维度分析", 23, collapsed=True, children=[
+    row(300, "维度分析", 25, collapsed=True, children=[
         panel(20, "涉及对象数", "stat", {"h": 8, "w": 6, "x": 0, "y": 25},
               [tgt('count(sum by (name) (count_over_time(%s [%s])))' % (SEL, RANGE_W),
                    "对象数", qtype="instant")],
@@ -324,7 +413,7 @@ panels = [
               "对象数超过 30 时列表会少于左边的计数，是预期行为不是故障。",
               list_table("事件数", {"name": "对象", "kind": "类型",
                                     "namespace": "命名空间"},
-                         ["name", "kind", "namespace"])),
+                         ["name", "kind", "namespace"], gauge=True)),
 
         panel(22, "按原因的事件速率", "timeseries", {"h": 8, "w": 12, "x": 0, "y": 33},
               [tgt('sum by (reason) (rate(%s [%s]))' % (SEL, W), "{{reason}}")],
@@ -339,7 +428,7 @@ panels = [
     # Grafana 的 row 是分隔符：排在某个 row 之后的顶层面板会被算作属于该 row。
     # 这个行放最前面的话，后面六个第一屏面板会被当成它的内容一起折叠掉
     # （实测：整屏截图里只剩三个行标题，六个面板全不显示）。
-    row(90, "说明 / 怎么读这个看板", 24, collapsed=True, children=[
+    row(90, "说明 / 怎么读这个看板", 26, collapsed=True, children=[
         {"id": 91, "type": "text", "title": "", "transparent": True,
          "gridPos": {"h": 10, "w": 24, "x": 0, "y": 25},
          "options": {"mode": "markdown", "content": DOC}},
@@ -401,7 +490,12 @@ out = "/root/loki-stack/grafana/dashboard-k8s-events.json"
 open(out, "w").write(json.dumps(dashboard, ensure_ascii=False, indent=2))
 print("已写入:", out)
 
-payload = {"dashboard": dashboard, "overwrite": True,
+# folderUid 必须显式给：不给的话 Grafana 会把看板放回 General
+# （实测 payload 不带这个字段，返回的 folderUid 是空串），
+# 文件夹级的权限配置就随之失效。看板归属属于部署配置，
+# 和看板内容一样应当由脚本持有，不靠手工拖拽维持。
+payload = {"dashboard": dashboard, "folderUid": "ops-only",
+           "overwrite": True,
            "message": "Kubernetes 事件看板"}
 r = subprocess.run(
     ["curl", "-s", "--max-time", "30", "-u", AUTH,

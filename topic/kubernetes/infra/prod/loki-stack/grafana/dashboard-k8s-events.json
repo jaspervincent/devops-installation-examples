@@ -310,7 +310,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 5,
+        "w": 4,
         "x": 8,
         "y": 0
       },
@@ -358,8 +358,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 11,
-        "x": 13,
+        "w": 12,
+        "x": 12,
         "y": 0
       },
       "targets": [
@@ -369,12 +369,12 @@
             "type": "loki",
             "uid": "efzm3ndgkowsga"
           },
-          "expr": "sum by (level) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$rate_window]))",
+          "expr": "sum by (level) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$__interval]))",
           "queryType": "range",
           "legendFormat": "{{level}}"
         }
       ],
-      "description": "按「速率窗口」分桶的事件条数，堆叠显示 Normal 与 Warning 的构成。不受顶部「级别」下拉影响——它本身就是按级别分组的，再被收窄就只剩一种颜色。",
+      "description": "按级别堆叠的事件条数直方图，分桶宽度自动跟随视图。不受顶部「级别」下拉影响——它本身就是按级别分组的，再被收窄就只剩一种颜色。",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -400,7 +400,8 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "interval": "5m"
     },
     {
       "id": 5,
@@ -411,7 +412,7 @@
         "uid": "efzm3ndgkowsga"
       },
       "gridPos": {
-        "h": 6,
+        "h": 10,
         "w": 24,
         "x": 0,
         "y": 4
@@ -425,9 +426,18 @@
           },
           "expr": "topk(30, sum by (reason, kind, namespace) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=\"warn\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$__range])))",
           "queryType": "instant"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "count by (reason, kind, namespace) (sum by (reason, kind, namespace, name) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=\"warn\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$__range])))",
+          "queryType": "instant"
         }
       ],
-      "description": "排障从这里开始：哪一类原因、什么对象类型、哪个命名空间，各多少次。按 reason+kind+namespace 聚合而**不带对象名**——带上会让一次探针抖动炸成几十行；具体是哪个对象去下面的事件流看。最多 30 行。这张表取代了原先四个写死 reason 的「常见故障速查」面板，新出现的故障类型会自动进来，不用改脚本。",
+      "description": "排障从这里开始：哪一类原因、什么对象类型、哪个命名空间，各多少次、涉及多少个对象。**「对象数」补的是影响面**：231 次 / 32 个对象是面上的问题，8 次 / 1 个对象是单点抖动，光看次数分不出来。按 reason+kind+namespace 聚合而**不带对象名**——带上会让一次探针抖动炸成几十行；具体是哪个对象去下面的事件流看。最多 30 行。这张表取代了原先四个写死 reason 的「常见故障速查」面板，新出现的故障类型会自动进来，不用改脚本。",
       "options": {
         "showHeader": true,
         "cellHeight": "sm",
@@ -446,7 +456,90 @@
             "align": "auto"
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "次数"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "fieldMinMax",
+                "value": true
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-BlPu"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "对象数"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "noValue",
+                "value": "—"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "原因"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 260
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "类型"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "命名空间"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
+          }
+        ]
       },
       "transformations": [
         {
@@ -471,14 +564,14 @@
               "kind": 2,
               "namespace": 3,
               "Value #A": 4,
-              "Value": 5
+              "Value #B": 5
             },
             "renameByName": {
               "reason": "原因",
               "kind": "类型",
               "namespace": "命名空间",
               "Value #A": "次数",
-              "Value": "次数"
+              "Value #B": "对象数"
             }
           }
         },
@@ -505,10 +598,10 @@
         "uid": "efzm3ndgkowsga"
       },
       "gridPos": {
-        "h": 12,
+        "h": 10,
         "w": 24,
         "x": 0,
-        "y": 10
+        "y": 14
       },
       "targets": [
         {
@@ -517,11 +610,11 @@
             "type": "loki",
             "uid": "efzm3ndgkowsga"
           },
-          "expr": "{project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=\"warn\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\"",
+          "expr": "{project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=\"warn\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" | line_format `{{.reason}}  {{.kind}}/{{.name}}  [{{.namespace}}]  {{.msg}}`",
           "queryType": "range"
         }
       ],
-      "description": "Warning 事件原文。点单条左侧箭头展开，logfmt 解析出的字段（reason / kind / name / reportingcontroller / msg）都在详情里，可直接点击做过滤。",
+      "description": "Warning 事件原文，已用 line_format 重排成「原因 类型/对象 [命名空间] 说明」。原始行里 objectAPIversion / objectRV / eventRV / reportinginstance 这些字段对人没用却占掉一半行宽，把真正要看的挤到了行尾。点单条左侧箭头展开，logfmt 解析出的字段（reason / kind / name / reportingcontroller / msg）都在详情里，可直接点击做过滤。",
       "options": {
         "showTime": true,
         "showLabels": false,
@@ -540,7 +633,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 24
       },
       "panels": [
         {
@@ -564,7 +657,7 @@
                 "type": "loki",
                 "uid": "efzm3ndgkowsga"
               },
-              "expr": "{project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=~\"$level\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\"",
+              "expr": "{project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=~\"$level\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" | line_format `{{.reason}}  {{.kind}}/{{.name}}  [{{.namespace}}]  {{.msg}}`",
               "queryType": "range"
             }
           ],
@@ -589,7 +682,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 23
+        "y": 25
       },
       "panels": [
         {
@@ -681,7 +774,38 @@
                 "align": "auto"
               }
             },
-            "overrides": []
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "事件数"
+                },
+                "properties": [
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "gauge",
+                      "mode": "gradient",
+                      "valueDisplayMode": "text"
+                    }
+                  },
+                  {
+                    "id": "min",
+                    "value": 0
+                  },
+                  {
+                    "id": "fieldMinMax",
+                    "value": true
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "continuous-BlPu"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "transformations": [
             {
@@ -842,7 +966,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 24
+        "y": 26
       },
       "panels": [
         {

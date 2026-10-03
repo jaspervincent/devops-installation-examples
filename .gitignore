@@ -1,0 +1,26 @@
+\#*
+.\#*
+*~
+*~undo-tree~
+/notes.org
+emacs_backtrace.txt
+.DS_Store
+.env
+
+
+## eBook build output
+*.epub
+*.mobi
+#*.pdf
+
+## Github Pages
+deploy.sh
+
+## vim
+*.swp
+*.un~
+
+## IDEA
+*.iml
+.idea
+

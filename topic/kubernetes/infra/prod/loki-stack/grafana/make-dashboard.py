@@ -141,88 +141,332 @@ def stat_opts(decimals, steps=None, graph="area"):
     }
 
 
-panels = [
-    # ---------------- 第 1 行：总览统计 ----------------
-    panel(1, "总日志速率", "stat", {"h": 4, "w": 6, "x": 0, "y": 0},
-          [target('sum(rate({' + JOB + ', ' + SEL + '}[%s]))' % W, "条/秒")],
-          "全部来源（Pod + journal）的日志写入速率",
-          stat_opts(1, [{"color": "green", "value": None},
-                        {"color": "orange", "value": 300},
-                        {"color": "red", "value": 500}])),
+RANGE_W = "$__range"     # 仪表盘时间范围
+LIST_N = 30              # topk 封顶
 
-    # 固定用 1h 窗口且统计【全部来源】：空闲的 control-plane 节点一小时可能
-    # 只产生几条日志，用 $rate_window（默认 5m）且只数 journal 会漏掉节点，
-    # 面板会误报红色。
-    panel(2, "上报节点数 (1h)", "stat", {"h": 4, "w": 6, "x": 6, "y": 0},
-          [target('count(count by (node) (count_over_time({node=~".+", ' + SEL + '}[1h])))', "节点",
-                  level=False)],
-          "过去 1 小时有日志上报的节点数（Pod + journal 全部来源）。"
-          "低于集群节点总数说明有节点的 Alloy 停了或节点失联。",
+# 总览的公共选择器：项目/环境 + 顶部的命名空间/节点过滤。
+# namespace 用 =~"$namespace" 而非可选：systemd 日志有 namespace=_system 占位，
+# 事件有 _cluster，所以 .+ 不会漏掉它们（见坑位 25）。
+OV = '{namespace=~"$namespace", node=~"$node", %s}' % SEL
+
+# 错误/致命级别。用 detected_level 而不是正文正则：覆盖 100% 的日志。
+ERR_LVL = 'error|critical|fatal'
+
+
+def row(pid, title, y, collapsed=False, children=None):
+    """折叠行。子面板必须嵌在 row["panels"] 里；
+    **顶层面板必须排在所有 row 之前**，否则会被算进某个 row 的区段跟着折叠。"""
+    return {"id": pid, "type": "row", "title": title, "collapsed": collapsed,
+            "gridPos": {"h": 1, "w": 24, "x": 0, "y": y},
+            "panels": list(children or [])}
+
+
+# 柱状堆叠时序：日志量直方图用。配面板级 interval 设最小步长——
+# 不设的话 step 可能只有一两秒，画出来是一排密集栅栏。
+BARS = {"fieldConfig": {"defaults": {
+            "custom": {"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0,
+                       "stacking": {"mode": "normal", "group": "A"}},
+            "unit": "short"}, "overrides": []},
+        "options": {"legend": {"displayMode": "list", "placement": "bottom",
+                               "showLegend": True},
+                    "tooltip": {"mode": "multi", "sort": "desc"}}}
+
+
+def table_noisy():
+    """「噪声来源」表：三条查询（条数 / 字节数 / 错误率）按 app+namespace+source 合并。
+
+    Loki 的 instant 查询返回「每序列一个 frame」，标签挂在 field.labels 上
+    而不是独立的列——所以必须 labelsToFields 摊成列、merge 并表。
+    四个变换顺序不能动；merge 之后值字段带 refId 后缀（Value #A/#B/#C），
+    改名和排序都按这个名字，改错了不报错、静默失效。
+    """
+    idx = {"Time": 0, "app": 1, "namespace": 2, "source": 3,
+           "Value #A": 4, "Value #B": 5, "Value #C": 6}
+    rn = {"app": "服务", "namespace": "命名空间", "source": "来源",
+          "Value #A": "条数", "Value #B": "字节数", "Value #C": "错误率"}
+    ov = [
+        {"matcher": {"id": "byName", "options": "条数"},
+         "properties": [
+             {"id": "custom.cellOptions",
+              "value": {"type": "gauge", "mode": "gradient",
+                        "valueDisplayMode": "text"}},
+             {"id": "min", "value": 0},
+             # gauge 默认按**整个 frame** 的全局 min/max 刻度，而不是本字段的。
+             # 「噪声来源」表里字节数最大 2.5 MiB、条数最大 5970，
+             # 不加这行的话条数的 gauge 条是空的（实测截图确认）。
+             {"id": "fieldMinMax", "value": True},
+             {"id": "color", "value": {"mode": "continuous-BlPu"}},
+             {"id": "custom.width", "value": 190}]},
+        {"matcher": {"id": "byName", "options": "字节数"},
+         "properties": [{"id": "unit", "value": "bytes"},
+                        {"id": "decimals", "value": 1},
+                        {"id": "custom.width", "value": 120}]},
+        {"matcher": {"id": "byName", "options": "错误率"},
+         "properties": [
+             {"id": "unit", "value": "percent"},
+             {"id": "decimals", "value": 1},
+             {"id": "noValue", "value": "0"},
+             {"id": "color", "value": {"mode": "thresholds"}},
+             {"id": "custom.cellOptions",
+              "value": {"type": "color-background", "mode": "gradient"}},
+             # 阈值按实测基线定：本环境常态约 11%（demo 应用故意造错误），
+             # 所以 20% 才转橙、40% 转红。换环境必须重新量，见坑位 19。
+             {"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                 {"color": "green", "value": None},
+                 {"color": "orange", "value": 20},
+                 {"color": "red", "value": 40}]}},
+             {"id": "custom.width", "value": 110}]},
+        {"matcher": {"id": "byName", "options": "命名空间"},
+         "properties": [{"id": "custom.width", "value": 160}]},
+        {"matcher": {"id": "byName", "options": "来源"},
+         "properties": [{"id": "custom.width", "value": 110}]},
+    ]
+    return {
+        "options": {"showHeader": True, "cellHeight": "sm",
+                    "footer": {"show": False, "reducer": ["sum"], "fields": ""}},
+        "fieldConfig": {"defaults": {"unit": "short",
+                                     "custom": {"align": "auto"}},
+                        "overrides": ov},
+        "transformations": [
+            {"id": "labelsToFields", "options": {"mode": "columns"}},
+            {"id": "merge", "options": {}},
+            {"id": "organize", "options": {"excludeByName": {"Time": True},
+                                           "indexByName": idx,
+                                           "renameByName": rn}},
+            {"id": "sortBy", "options": {"fields": {},
+                                         "sort": [{"field": "条数", "desc": True}]}},
+        ],
+    }
+
+
+def table1(value_label, renames, order, unit="short"):
+    """单查询表格：标签列 + 一个值列。"""
+    rn = dict(renames)
+    rn["Value #A"] = value_label
+    rn["Value"] = value_label
+    idx = {"Time": 0}
+    for n, f in enumerate(list(order) + ["Value #A", "Value"], start=1):
+        idx[f] = n
+    return {
+        "options": {"showHeader": True, "cellHeight": "sm",
+                    "footer": {"show": False, "reducer": ["sum"], "fields": ""}},
+        "fieldConfig": {"defaults": {"unit": unit,
+                                     "custom": {"align": "auto"}},
+                        "overrides": [
+                            {"matcher": {"id": "byName", "options": value_label},
+                             "properties": [
+                                 {"id": "custom.cellOptions",
+                                  "value": {"type": "gauge", "mode": "gradient",
+                                            "valueDisplayMode": "text"}},
+                                 {"id": "min", "value": 0},
+                                 # gauge 默认按**整个 frame** 的全局 min/max
+                                 # 刻度，字段量级差得远时条会看不见。
+                                 # fieldMinMax 让它按自己的范围刻度。
+                                 {"id": "fieldMinMax", "value": True},
+                                 {"id": "color",
+                                  "value": {"mode": "continuous-BlPu"}}]}]},
+        "transformations": [
+            {"id": "labelsToFields", "options": {"mode": "columns"}},
+            {"id": "merge", "options": {}},
+            {"id": "organize", "options": {"excludeByName": {"Time": True},
+                                           "indexByName": idx,
+                                           "renameByName": rn}},
+            {"id": "sortBy", "options": {"fields": {},
+                                         "sort": [{"field": value_label,
+                                                   "desc": True}]}},
+        ],
+    }
+
+
+# 「噪声来源」表的三条查询。**整张表不受顶部「级别」下拉影响**：
+# 它回答的是「谁在刷日志、谁健康」，按级别收窄之后错误率列会恒为 100%，
+# 失去意义。所以三条都传 level=False。
+NOISY_A = ('topk(%d, sum by (app, namespace, source) (count_over_time(%s [%s])))'
+           % (LIST_N, OV, RANGE_W))
+NOISY_B = ('sum by (app, namespace, source) (bytes_over_time(%s [%s]))'
+           % (OV, RANGE_W))
+NOISY_C = ('sum by (app, namespace, source) (count_over_time(%s '
+           '| detected_level=~"%s" [%s])) / '
+           'sum by (app, namespace, source) (count_over_time(%s [%s])) * 100'
+           % (OV, ERR_LVL, RANGE_W, OV, RANGE_W))
+
+# 全局错误占比：比绝对速率更适合判断异常，因为它不随流量规模变化。
+ERR_RATIO = ('sum(count_over_time(%s | detected_level=~"%s" [%s])) / '
+             'sum(count_over_time(%s [%s])) * 100'
+             % (OV, ERR_LVL, RANGE_W, OV, RANGE_W))
+
+DOC = """\
+### 这个看板回答什么
+
+**采集链路健康吗、容量多大、谁在刷日志。**
+
+它是 *运维视角的全局总览*，不是排障工具——定位某个服务的具体问题用
+「研发排障 - 实时日志」，看网关流量用「Gateway 访问日志」。
+
+### 第一屏怎么读
+
+| 指标 | 回答 |
+|---|---|
+| 日志速率 | 写入量级（条/秒） |
+| 写入速率 | **容量口径**（字节/秒）——一条访问日志和一条 Java 堆栈差两个数量级 |
+| 上报节点数 | **采集链路存活**：低于集群节点数说明有节点的 Alloy 停了或失联 |
+| 错误占比 | 全局错误水位。用比例不用绝对速率，因为比例不随流量规模变化 |
+
+往下是日志量直方图（先看几点开始异常）、按命名空间/节点的分布，
+再往下是**噪声来源表**——谁在刷日志、谁最占存储。
+
+### 几个容易误解的地方
+
+- **「上报节点数」固定用 1 小时窗口**，不跟顶部的速率窗口。
+  空闲的 control-plane 节点 10 分钟内可能一条日志都没有——实测 10 分钟
+  窗口里只有 3 个节点出现，用短窗口会误报红色。
+- **噪声来源表不受「级别」下拉影响**。它回答「谁在刷、谁健康」，
+  按级别收窄后错误率列会恒为 100%，失去意义。
+- **Loki 自身的 info 级日志已在采集端丢弃**（见 README「丢弃 Loki 自身的
+  噪声日志」）。过滤前它占全栈 84~96%，现在只剩 error/warn。
+  想看回全量，注释掉 `config.alloy` 里那一段。
+"""
+
+
+panels = [
+    # ================ 第一屏：采集健康 + 容量 ================
+    panel(1, "日志速率", "stat", {"h": 4, "w": 6, "x": 0, "y": 0},
+          [target('sum(rate(%s [%s]))' % (OV, W), "条/秒")],
+          "全部来源（Pod + journal + 事件）的日志写入速率。",
+          stat_opts(1, graph="none")),
+
+    panel(2, "写入速率", "stat", {"h": 4, "w": 6, "x": 6, "y": 0},
+          [target('sum(bytes_rate(%s [%s]))' % (OV, W), "B/s")],
+          "**容量口径**：一条 nginx 访问日志和一条 Java 堆栈差两个数量级，"
+          "按条数估容量会严重失真。做容量规划和保留策略时看这个。",
+          dict(stat_opts(1, graph="none"),
+               fieldConfig={"defaults": {"unit": "Bps", "decimals": 1,
+                                         "noValue": "0"}, "overrides": []})),
+
+    # 固定 1h 窗口且统计【全部来源】：空闲的 control-plane 节点 10 分钟内
+    # 可能一条日志都没有——实测 10 分钟窗口里只有 3 个节点出现，
+    # 用速率窗口会误报红色。这个设计不要动。
+    panel(3, "上报节点数 (1h)", "stat", {"h": 4, "w": 6, "x": 12, "y": 0},
+          [target('count(count by (node) (count_over_time({node=~".+", ' + SEL + '}[1h])))',
+                  "节点")],
+          "过去 1 小时有日志上报的节点数（全部来源）。"
+          "**低于集群节点总数说明有节点的 Alloy 停了或失联**——"
+          "这是本看板唯一的链路存活信号。窗口固定 1h，不跟顶部的速率窗口。",
           stat_opts(0, [{"color": "red", "value": None},
                         {"color": "orange", "value": 4},
                         {"color": "green", "value": 5}], graph="none")),
 
-    panel(3, "错误日志速率", "stat", {"h": 4, "w": 6, "x": 12, "y": 0},
-          [target('sum(rate({namespace=~".+", namespace!="loki", ' + SEL + '} '
-                  '|~ `(?i)(^|[^a-z])(error|fatal|panic)([^a-z]|$)` [%s]))' % W, "条/秒")],
-          "业务命名空间的错误日志速率。排除 loki 命名空间：它的查询日志含大量 error 字样会造成自激噪声",
-          stat_opts(2, [{"color": "green", "value": None},
-                        {"color": "orange", "value": 1},
-                        {"color": "red", "value": 2}])),
+    panel(4, "错误占比", "stat", {"h": 4, "w": 6, "x": 18, "y": 0},
+          [target(ERR_RATIO, "%", level=False, qtype="instant")],
+          "error / critical / fatal 占全部日志的百分比。"
+          "用比例不用绝对速率——**比例不随流量规模变化**，绝对值会。"
+          "阈值按实测基线定：本环境常态约 11%（demo 应用故意造错误），"
+          "所以 20% 转橙、40% 转红。换环境必须重新量，见坑位 19。",
+          dict(stat_opts(1, [{"color": "green", "value": None},
+                             {"color": "orange", "value": 20},
+                             {"color": "red", "value": 40}], graph="none"),
+               fieldConfig={"defaults": {"unit": "percent", "decimals": 1,
+                                         "noValue": "0",
+                                         "color": {"mode": "thresholds"},
+                                         "thresholds": {"mode": "absolute",
+                                                        "steps": [
+                                             {"color": "green", "value": None},
+                                             {"color": "orange", "value": 20},
+                                             {"color": "red", "value": 40}]}},
+                            "overrides": []})),
 
-    panel(4, "活跃 namespace 数", "stat", {"h": 4, "w": 6, "x": 18, "y": 0},
-          [target('count(sum by (namespace) (count_over_time({namespace=~".+", ' + SEL + '}[%s])))' % W, "个")],
-          "有日志产出的命名空间数量",
-          stat_opts(0, graph="none")),
+    # 分桶用 $__interval（= Grafana 的 step）而不是速率窗口：后者是滑动窗口，
+    # 相邻桶重叠会糊成一整块色带，看不出"几点开始异常"。
+    # 配面板级 interval 设最小步长，避免 step 太细变成密集栅栏。
+    panel(5, "日志量（按级别）", "timeseries", {"h": 6, "w": 24, "x": 0, "y": 4},
+          [target('sum by (detected_level) (count_over_time(%s [$__interval]))' % OV,
+                  "{{detected_level}}")],
+          "按级别堆叠的日志条数直方图。**先在这里看出几点开始异常，再往下看分布**"
+          "——直接看速率曲线容易错过起始时间点。",
+          dict(BARS, interval="30s")),
 
-    # ---------------- 第 2 行：分布趋势 ----------------
-    panel(10, "按 namespace 的日志速率", "timeseries", {"h": 8, "w": 12, "x": 0, "y": 4},
-          [target('sum by (namespace) (rate({namespace=~".+", ' + SEL + '}[%s]))' % W, "{{namespace}}")],
-          "Kubernetes Pod 日志，按命名空间聚合", ts_opts),
+    panel(10, "按命名空间的日志速率", "timeseries",
+          {"h": 8, "w": 12, "x": 0, "y": 10},
+          [target('sum by (namespace) (rate(%s [%s]))' % (OV, W), "{{namespace}}")],
+          "namespace=_system 是宿主机 journal 的占位值，"
+          "_cluster 是集群级对象的事件（见坑位 25）。", ts_opts),
 
-    panel(11, "按 node 的日志速率", "timeseries", {"h": 8, "w": 12, "x": 12, "y": 4},
-          [target('sum by (node) (rate({node=~".+", ' + SEL + '}[%s]))' % W, "{{node}}")],
-          "全部来源，按节点聚合。某条线掉到 0 说明该节点 Alloy 可能异常", ts_opts),
+    panel(11, "按节点的日志速率", "timeseries",
+          {"h": 8, "w": 12, "x": 12, "y": 10},
+          [target('sum by (node) (rate(%s [%s]))' % (OV, W), "{{node}}")],
+          "某条线掉到 0 说明该节点的 Alloy 可能异常。"
+          "注意空闲的 control-plane 节点本来就接近 0，看趋势不看绝对值。",
+          ts_opts),
 
-    # ---------------- 第 3 行：系统日志 ----------------
-    panel(20, "systemd unit 日志速率 (Top 10)", "timeseries", {"h": 8, "w": 12, "x": 0, "y": 12},
-          [target('topk(10, sum by (unit) (rate({job="systemd-journal", ' + SEL + '}[%s])))' % W, "{{unit}}")],
-          "宿主机 systemd 服务日志，含 kubelet / containerd 等", ts_opts),
+    panel(12, "噪声来源 Top", "table", {"h": 8, "w": 24, "x": 0, "y": 18},
+          [target(NOISY_A, None, level=False, qtype="instant"),
+           target(NOISY_B, None, ref="B", level=False, qtype="instant"),
+           target(NOISY_C, None, ref="C", level=False, qtype="instant")],
+          "**谁在刷日志、谁最占存储**——这是总览看板独有的价值。"
+          "按条数倒序，最多 30 行。带字节数列是因为运维关心的是存储成本，"
+          "不是行数。**整张表不受顶部「级别」下拉影响**：按级别收窄后"
+          "错误率列会恒为 100%，失去意义。",
+          table_noisy()),
 
-    panel(21, "错误日志速率 (按 namespace)", "timeseries", {"h": 8, "w": 12, "x": 12, "y": 12},
-          [target('sum by (namespace) (rate({namespace=~".+", namespace!="loki", ' + SEL + '} '
-                  '|~ `(?i)(^|[^a-z])(error|fatal|panic)([^a-z]|$)` [%s]))' % W, "{{namespace}}")],
-          "排除 loki 命名空间，避免其查询日志造成自激噪声", ts_opts),
+    # ================ 折叠：错误专区 ================
+    row(300, "错误专区", 26, collapsed=True, children=[
+        panel(20, "错误日志速率（按命名空间）", "timeseries",
+              {"h": 8, "w": 12, "x": 0, "y": 27},
+              [target('sum by (namespace) (rate(%s | detected_level=~"%s" [%s]))'
+                      % (OV, ERR_LVL, W), "{{namespace}}", level=False)],
+              "用 detected_level 而不是正文正则匹配 error——"
+              "后者会把「提到 error 这个词」的行也算进来（坑位 63 同类）。",
+              ts_opts),
 
-    # ---------------- 第 4 行：Top 榜 ----------------
-    panel(30, "日志量最大的 Pod (Top 10)", "timeseries", {"h": 8, "w": 12, "x": 0, "y": 20},
-          [target('topk(10, sum by (namespace, pod) (rate({namespace=~".+", ' + SEL + '}[%s])))' % W,
-                  "{{namespace}}/{{pod}}")],
-          "定位刷日志的 Pod", ts_opts),
+        panel(21, "kubelet 错误速率（按节点）", "timeseries",
+              {"h": 8, "w": 12, "x": 12, "y": 27},
+              [target('sum by (node) (rate({unit="kubelet.service", ' + SEL + '} '
+                      '|~ `(?i)(^|[^a-z])(error|failed)([^a-z]|$)` [%s]))' % W,
+                      "{{node}}")],
+              "kubelet 报错是节点级问题的早期信号。", ts_opts),
 
-    panel(31, "kubelet 错误速率 (按节点)", "timeseries", {"h": 8, "w": 12, "x": 12, "y": 20},
-          [target('sum by (node) (rate({unit="kubelet.service", ' + SEL + '} '
-                  '|~ `(?i)(^|[^a-z])(error|failed)([^a-z]|$)` [%s]))' % W, "{{node}}")],
-          "kubelet 报错是节点级问题的早期信号", ts_opts),
+        panel(22, "错误日志流", "logs", {"h": 12, "w": 24, "x": 0, "y": 35},
+              [target('%s | detected_level=~"%s" '
+                      '!~ `caller=(metrics|roundtrip|engine)\\.go`'
+                      % (OV, ERR_LVL), level=False)],
+              "末尾的 !~ 剔除 Loki 自身 querier/ruler 把查询语句原样打进日志的行——"
+              "那些行里含 error 字样，会淹没真实错误。",
+              {"options": {"showTime": True, "showLabels": True,
+                           "wrapLogMessage": True, "sortOrder": "Descending",
+                           "enableLogDetails": True, "dedupStrategy": "none"}}),
+    ]),
 
-    # ---------------- 第 5 行：实时日志 ----------------
-    panel(40, "实时日志流", "logs", {"h": 12, "w": 24, "x": 0, "y": 28},
-          [target('{namespace=~"$namespace", node=~"$node", ' + JOB + ', ' + SEL + '}')],
-          "受顶部 namespace / node 变量过滤",
-          {"options": {"showTime": True, "showLabels": False, "wrapLogMessage": True,
-                       "sortOrder": "Descending", "enableLogDetails": True,
-                       "dedupStrategy": "none"}}),
+    # ================ 折叠：系统日志 ================
+    row(400, "系统日志（宿主机 journal）", 27, collapsed=True, children=[
+        panel(30, "systemd unit Top", "table", {"h": 8, "w": 24, "x": 0, "y": 28},
+              [target('topk(%d, sum by (unit, node) (count_over_time('
+                      '{job="systemd-journal", ' % LIST_N + SEL + '}[%s])))' % RANGE_W,
+                      None, qtype="instant")],
+              "宿主机 systemd 服务日志，含 kubelet / containerd / sshd 等。"
+              "**注意 session-*.scope**：每次 SSH 登录 systemd 都新建一个 scope，"
+              "会变成一个新的 unit 取值且只增不减（见 README 容量一节）。",
+              table1("条数", {"unit": "服务单元", "node": "节点"},
+                     ["unit", "node"])),
+    ]),
 
-    panel(41, "错误日志流", "logs", {"h": 12, "w": 24, "x": 0, "y": 40},
-          [target('{namespace=~"$namespace", node=~"$node", ' + JOB + ', ' + SEL + '} '
-                  '|~ `(?i)(^|[^a-z])(error|fatal|panic)([^a-z]|$)` '
-                  '!~ `caller=(metrics|roundtrip|engine)\\.go`')],
-          "只显示含 error / fatal / panic 的行。"
-          "末尾的 !~ 用于剔除 Loki 自身 querier/query-frontend/ruler 的查询日志——"
-          "它们会把查询语句原样打进日志，其中含 error 字样，否则会淹没真实错误。",
-          {"options": {"showTime": True, "showLabels": True, "wrapLogMessage": True,
-                       "sortOrder": "Descending", "enableLogDetails": True,
-                       "dedupStrategy": "none"}}),
+    # ================ 折叠：实时日志流 ================
+    row(500, "实时日志流", 28, collapsed=True, children=[
+        panel(40, "实时日志流", "logs", {"h": 14, "w": 24, "x": 0, "y": 29},
+              [target('{namespace=~"$namespace", node=~"$node", ' + JOB + ', '
+                      + SEL + '}')],
+              "受顶部全部过滤器约束。定位某个服务的具体问题用"
+              "「研发排障 - 实时日志」看板，那里的日志流是主角、过滤器也更合用。",
+              {"options": {"showTime": True, "showLabels": False,
+                           "wrapLogMessage": True, "sortOrder": "Descending",
+                           "enableLogDetails": True, "dedupStrategy": "none"}}),
+    ]),
+
+    # ================ 折叠：说明 ================
+    row(600, "说明 / 怎么读这个看板", 29, collapsed=True, children=[
+        {"id": 91, "type": "text", "title": "", "transparent": True,
+         "gridPos": {"h": 14, "w": 24, "x": 0, "y": 30},
+         "options": {"mode": "markdown", "content": DOC}},
+    ]),
 ]
 
 WINDOWS = ["1m", "5m", "10m", "30m", "1h"]
@@ -275,7 +519,12 @@ dashboard = {
 out_path = "/root/loki-stack/grafana/dashboard-log-overview.json"
 open(out_path, "w").write(json.dumps(dashboard, ensure_ascii=False, indent=2))
 
-payload = {"dashboard": dashboard, "overwrite": True,
+# folderUid 必须显式给：不给的话 Grafana 会把看板放回 General
+# （实测 payload 不带这个字段，返回的 folderUid 是空串），
+# 文件夹级的权限配置就随之失效。看板归属属于部署配置，
+# 和看板内容一样应当由脚本持有，不靠手工拖拽维持。
+payload = {"dashboard": dashboard, "folderUid": "ops-only",
+           "overwrite": True,
            "message": "fix: $__rate_interval 不被 Loki 数据源插值，改用 $rate_window"}
 
 r = subprocess.run(
