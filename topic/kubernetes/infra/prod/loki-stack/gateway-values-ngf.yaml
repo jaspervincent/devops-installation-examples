@@ -1,0 +1,94 @@
+# ==============================================================================
+# nginx-gateway-fabric 2.6.7
+#
+# 原来是用 --set 装的，这里改成 values 文件便于维护。
+# 前三项与原 --set 完全一致，新增的是 nginx.config.logging（JSON access log）。
+#
+# 升级：
+#   helm upgrade ngf /root/gatewayapi/ngfdir/nginx-gateway-fabric \
+#     -n nginx-gateway --values values-ngf.yaml
+# ==============================================================================
+
+nginxGateway:
+  # snippets.enable 同时启用 SnippetsFilter 和 SnippetsPolicy。
+  # 旧的 snippetsFilters.enable 已被 chart 标记为 deprecated，且只开前者——
+  # 而 gzip 要下在 http 上下文、作用于整个 Gateway，必须用 SnippetsPolicy。
+  snippets:
+    enable: true
+
+nginx:
+  # ---- 验证用：把数据面固定到当前宣告 LB IP 的节点 ----
+  # 目的：搞清楚 Cilium 在「流量到达的节点上就有后端 Pod」时，
+  # 是否会跳过 SNAT 从而保留客户端真实 IP。
+  # 当前 L2 宣告在 node01，所以固定到 node01。
+  # 结论出来之前这是临时配置，不是最终方案。
+  pod:
+    nodeSelector:
+      kubernetes.io/hostname: node01.jasper.org
+
+  service:
+    type: LoadBalancer
+    externalTrafficPolicy: Cluster
+
+  # ---- 时区：东八区 ----
+  # 数据面镜像是 Alpine，**既没有 /etc/localtime 也没有 tzdata**，
+  # 所以 $time_iso8601 / $time_local / error log 的时间全是 UTC
+  # （日志里是 +00:00，比北京时间晚 8 小时）。
+  #
+  # 只设 TZ=Asia/Shanghai 是没用的：musl 会去找
+  # /usr/share/zoneinfo/Asia/Shanghai，镜像里没有这个文件，就静默回退 UTC。
+  # 必须把宿主机的时区文件挂进来。这里刻意不设 TZ 环境变量——
+  # musl 在 TZ 未设时直接读 /etc/localtime，正好是我们挂进去的那个。
+  #
+  # 挂的是 /usr/share/zoneinfo/Asia/Shanghai 这个**实际文件**，不是宿主机的
+  # /etc/localtime——后者是指向 ../usr/share/zoneinfo/Asia/Shanghai 的符号链接，
+  # 用 hostPath 挂符号链接要额外处理解析。五个节点都有这个文件（已实测）。
+  #
+  # NginxProxy CRD 的 container 字段只有 debug/hostPorts/image，给不了
+  # env 和 volumeMounts，所以只能走 patches。
+  # chart 会把 nginx.patches 渲染进 NginxProxy 的 kubernetes.deployment.patches。
+  # 必须用 JSONPatch，不能用 StrategicMerge（默认类型）。
+  # StrategicMerge 在 NGF provisioner 这条路径上会**按索引覆盖**而不是按 name 合并：
+  # 只含一个元素的 volumes 会盖掉 volumes[0]（原本是 projected 类型的 token），
+  # API Server 报 "may not specify more than 1 volume type"，
+  # 同时 volumeMounts 的引用全部错位，Deployment 更新直接被拒。
+  # JSONPatch 的 "/-" 是追加到列表末尾，不碰任何现有元素。
+  #
+  # containers/0 就是 nginx：数据面 Pod 只有这一个业务容器（另有 init 初始化容器）。
+  patches:
+  - type: JSONPatch
+    value:
+    - op: add
+      path: /spec/template/spec/volumes/-
+      value:
+        name: tz-shanghai
+        hostPath:
+          path: /usr/share/zoneinfo/Asia/Shanghai
+          type: File
+    - op: add
+      path: /spec/template/spec/containers/0/volumeMounts/-
+      value:
+        name: tz-shanghai
+        mountPath: /etc/localtime
+        readOnly: true
+
+  # nginx.config 的内容会被原样渲染进 NginxProxy 的 spec
+  # （chart 模板 templates/nginxproxy.yaml: toYaml .Values.nginx.config）
+  config:
+    logging:
+      # escape: json —— 让 nginx 按 JSON 规则转义变量值（引号、反斜杠、控制字符），
+      # 否则 User-Agent 里带引号就会把整行 JSON 破坏掉。
+      accessLog:
+        escape: json
+
+        # 注意两条硬性限制（来自 NginxProxy CRD 的 schema）：
+        #   1. 不能有单引号 —— 这段会被渲染进单引号包裹的 log_format 指令里
+        #   2. 不能有换行 —— 必须写成一行
+        #
+        # 字段取舍：$status / $body_bytes_sent / $request_length / $request_time
+        # 这几个 nginx 保证非空，所以不加引号，让它们在 JSON 里是数字类型，
+        # Grafana 里可直接做数值比较和聚合。
+        # upstream 相关变量在未走到上游时会是空值，必须加引号，否则
+        # 会产生 "upstream_status":, 这种非法 JSON。
+        format: >-
+          {"time":"$time_iso8601","remote_addr":"$remote_addr","x_forwarded_for":"$http_x_forwarded_for","host":"$host","method":"$request_method","uri":"$request_uri","protocol":"$server_protocol","status":$status,"body_bytes_sent":$body_bytes_sent,"request_length":$request_length,"request_time":$request_time,"upstream_addr":"$upstream_addr","upstream_status":"$upstream_status","upstream_response_time":"$upstream_response_time","referer":"$http_referer","user_agent":"$http_user_agent","request_id":"$request_id"}

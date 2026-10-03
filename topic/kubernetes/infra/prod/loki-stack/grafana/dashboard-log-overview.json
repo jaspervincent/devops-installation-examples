@@ -1,0 +1,904 @@
+{
+  "uid": "loki-log-overview",
+  "title": "日志总览 (Loki)",
+  "description": "Kubernetes Pod 日志 + 宿主机 systemd journal 总览。数据来源 Alloy -> Loki（租户 jasper）。",
+  "tags": [
+    "loki",
+    "logs",
+    "alloy"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "editable": true,
+  "templating": {
+    "list": [
+      {
+        "name": "project",
+        "label": "项目",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "project",
+          "refId": "project",
+          "type": 1
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "environment",
+        "label": "环境",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "environment",
+          "refId": "environment",
+          "type": 1,
+          "stream": "{project=~\"$project\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "namespace",
+        "label": "命名空间",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "namespace",
+          "refId": "namespace",
+          "type": 1,
+          "stream": "{project=~\"$project\", environment=~\"$environment\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "node",
+        "label": "节点",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "node",
+          "refId": "node",
+          "type": 1,
+          "stream": "{project=~\"$project\", environment=~\"$environment\", namespace=~\"$namespace\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "job",
+        "label": "job",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "job",
+          "refId": "job",
+          "type": 1,
+          "stream": "{project=~\"$project\", environment=~\"$environment\", namespace=~\"$namespace\", node=~\"$node\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "level",
+        "label": "级别",
+        "type": "custom",
+        "query": "trace,debug,info,notice,warn,error,critical,fatal,unknown",
+        "options": [
+          {
+            "selected": false,
+            "text": "trace",
+            "value": "trace"
+          },
+          {
+            "selected": false,
+            "text": "debug",
+            "value": "debug"
+          },
+          {
+            "selected": false,
+            "text": "info",
+            "value": "info"
+          },
+          {
+            "selected": false,
+            "text": "notice",
+            "value": "notice"
+          },
+          {
+            "selected": false,
+            "text": "warn",
+            "value": "warn"
+          },
+          {
+            "selected": false,
+            "text": "error",
+            "value": "error"
+          },
+          {
+            "selected": false,
+            "text": "critical",
+            "value": "critical"
+          },
+          {
+            "selected": false,
+            "text": "fatal",
+            "value": "fatal"
+          },
+          {
+            "selected": false,
+            "text": "unknown",
+            "value": "unknown"
+          }
+        ],
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "refresh": 0,
+        "skipUrlSync": false,
+        "description": "按 Loki 推断的 detected_level 过滤，覆盖全部日志。不用索引标签 level：它只覆盖约 5% 的日志，用它筛会让绝大多数 Pod 日志消失。"
+      },
+      {
+        "name": "rate_window",
+        "label": "速率窗口",
+        "type": "interval",
+        "query": "1m,5m,10m,30m,1h",
+        "auto": false,
+        "auto_count": 30,
+        "auto_min": "10s",
+        "refresh": 0,
+        "skipUrlSync": false,
+        "current": {
+          "selected": true,
+          "text": "5m",
+          "value": "5m"
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "1m",
+            "value": "1m"
+          },
+          {
+            "selected": true,
+            "text": "5m",
+            "value": "5m"
+          },
+          {
+            "selected": false,
+            "text": "10m",
+            "value": "10m"
+          },
+          {
+            "selected": false,
+            "text": "30m",
+            "value": "30m"
+          },
+          {
+            "selected": false,
+            "text": "1h",
+            "value": "1h"
+          }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "总日志速率",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum(rate({job=~\"$job\", project=~\"$project\", environment=~\"$environment\"} | detected_level=~\"$level\" [$rate_window]))",
+          "queryType": "range",
+          "legendFormat": "条/秒"
+        }
+      ],
+      "description": "全部来源（Pod + journal）的日志写入速率",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 300
+              },
+              {
+                "color": "red",
+                "value": 500
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 2,
+      "title": "上报节点数 (1h)",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "count(count by (node) (count_over_time({node=~\".+\", project=~\"$project\", environment=~\"$environment\"}[1h])))",
+          "queryType": "range",
+          "legendFormat": "节点"
+        }
+      ],
+      "description": "过去 1 小时有日志上报的节点数（Pod + journal 全部来源）。低于集群节点总数说明有节点的 Alloy 停了或节点失联。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 4
+              },
+              {
+                "color": "green",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 3,
+      "title": "错误日志速率",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum(rate({namespace=~\".+\", namespace!=\"loki\", project=~\"$project\", environment=~\"$environment\"} | detected_level=~\"$level\"  |~ `(?i)(^|[^a-z])(error|fatal|panic)([^a-z]|$)` [$rate_window]))",
+          "queryType": "range",
+          "legendFormat": "条/秒"
+        }
+      ],
+      "description": "业务命名空间的错误日志速率。排除 loki 命名空间：它的查询日志含大量 error 字样会造成自激噪声",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 4,
+      "title": "活跃 namespace 数",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "count(sum by (namespace) (count_over_time({namespace=~\".+\", project=~\"$project\", environment=~\"$environment\"} | detected_level=~\"$level\" [$rate_window])))",
+          "queryType": "range",
+          "legendFormat": "个"
+        }
+      ],
+      "description": "有日志产出的命名空间数量",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 10,
+      "title": "按 namespace 的日志速率",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum by (namespace) (rate({namespace=~\".+\", project=~\"$project\", environment=~\"$environment\"} | detected_level=~\"$level\" [$rate_window]))",
+          "queryType": "range",
+          "legendFormat": "{{namespace}}"
+        }
+      ],
+      "description": "Kubernetes Pod 日志，按命名空间聚合",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "按 node 的日志速率",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum by (node) (rate({node=~\".+\", project=~\"$project\", environment=~\"$environment\"} | detected_level=~\"$level\" [$rate_window]))",
+          "queryType": "range",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "description": "全部来源，按节点聚合。某条线掉到 0 说明该节点 Alloy 可能异常",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 20,
+      "title": "systemd unit 日志速率 (Top 10)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "topk(10, sum by (unit) (rate({job=\"systemd-journal\", project=~\"$project\", environment=~\"$environment\"} | detected_level=~\"$level\" [$rate_window])))",
+          "queryType": "range",
+          "legendFormat": "{{unit}}"
+        }
+      ],
+      "description": "宿主机 systemd 服务日志，含 kubelet / containerd 等",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 21,
+      "title": "错误日志速率 (按 namespace)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum by (namespace) (rate({namespace=~\".+\", namespace!=\"loki\", project=~\"$project\", environment=~\"$environment\"} | detected_level=~\"$level\"  |~ `(?i)(^|[^a-z])(error|fatal|panic)([^a-z]|$)` [$rate_window]))",
+          "queryType": "range",
+          "legendFormat": "{{namespace}}"
+        }
+      ],
+      "description": "排除 loki 命名空间，避免其查询日志造成自激噪声",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 30,
+      "title": "日志量最大的 Pod (Top 10)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "topk(10, sum by (namespace, pod) (rate({namespace=~\".+\", project=~\"$project\", environment=~\"$environment\"} | detected_level=~\"$level\" [$rate_window])))",
+          "queryType": "range",
+          "legendFormat": "{{namespace}}/{{pod}}"
+        }
+      ],
+      "description": "定位刷日志的 Pod",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 31,
+      "title": "kubelet 错误速率 (按节点)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum by (node) (rate({unit=\"kubelet.service\", project=~\"$project\", environment=~\"$environment\"} | detected_level=~\"$level\"  |~ `(?i)(^|[^a-z])(error|failed)([^a-z]|$)` [$rate_window]))",
+          "queryType": "range",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "description": "kubelet 报错是节点级问题的早期信号",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 12,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 40,
+      "title": "实时日志流",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "{namespace=~\"$namespace\", node=~\"$node\", job=~\"$job\", project=~\"$project\", environment=~\"$environment\"} | detected_level=~\"$level\" ",
+          "queryType": "range"
+        }
+      ],
+      "description": "受顶部 namespace / node 变量过滤",
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 41,
+      "title": "错误日志流",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "{namespace=~\"$namespace\", node=~\"$node\", job=~\"$job\", project=~\"$project\", environment=~\"$environment\"} | detected_level=~\"$level\"  |~ `(?i)(^|[^a-z])(error|fatal|panic)([^a-z]|$)` !~ `caller=(metrics|roundtrip|engine)\\.go`",
+          "queryType": "range"
+        }
+      ],
+      "description": "只显示含 error / fatal / panic 的行。末尾的 !~ 用于剔除 Loki 自身 querier/query-frontend/ruler 的查询日志——它们会把查询语句原样打进日志，其中含 error 字样，否则会淹没真实错误。",
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      }
+    }
+  ]
+}

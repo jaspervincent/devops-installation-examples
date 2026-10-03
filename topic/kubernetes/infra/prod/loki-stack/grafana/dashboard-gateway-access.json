@@ -1,0 +1,1399 @@
+{
+  "uid": "loki-gateway-access",
+  "title": "Gateway 访问日志 (nginx-gateway-fabric)",
+  "description": "nginx-gateway-fabric 数据面的 JSON 访问日志。日志格式由 NginxProxy 的 logging.accessLog 定义（escape: json）。",
+  "tags": [
+    "loki",
+    "logs",
+    "gateway",
+    "nginx"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "editable": true,
+  "templating": {
+    "list": [
+      {
+        "name": "project",
+        "label": "项目",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "project",
+          "refId": "project",
+          "type": 1
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "sort": 1,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "environment",
+        "label": "环境",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "environment",
+          "refId": "environment",
+          "type": 1,
+          "stream": "{project=~\"$project\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "sort": 1,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "gateway",
+        "label": "网关",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "app",
+          "refId": "gateway",
+          "type": 1,
+          "stream": "{project=~\"$project\", environment=~\"$environment\", source=\"pod\", container=\"nginx\", app=~\".+-nginx\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "sort": 1,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "host",
+        "label": "Host",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "host",
+          "refId": "host",
+          "type": 1,
+          "stream": "{project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "sort": 1,
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "status",
+        "label": "状态码",
+        "type": "custom",
+        "query": "全部 : .+,2xx 成功 : 2..,3xx 重定向 : 3..,4xx 客户端错误 : 4..,5xx 服务端错误 : 5..,4xx + 5xx 全部错误 : [45]..",
+        "current": {
+          "text": "全部",
+          "value": ".+"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "全部",
+            "value": ".+"
+          },
+          {
+            "selected": false,
+            "text": "2xx 成功",
+            "value": "2.."
+          },
+          {
+            "selected": false,
+            "text": "3xx 重定向",
+            "value": "3.."
+          },
+          {
+            "selected": false,
+            "text": "4xx 客户端错误",
+            "value": "4.."
+          },
+          {
+            "selected": false,
+            "text": "5xx 服务端错误",
+            "value": "5.."
+          },
+          {
+            "selected": false,
+            "text": "4xx + 5xx 全部错误",
+            "value": "[45].."
+          }
+        ],
+        "description": "按 HTTP 状态码筛选，值是正则。默认 .+ 匹配全部"
+      },
+      {
+        "name": "search",
+        "label": "关键字",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "description": "在日志正文里搜索，留空则不过滤"
+      },
+      {
+        "name": "level",
+        "label": "级别",
+        "type": "custom",
+        "query": "trace,debug,info,notice,warn,error,critical,fatal,unknown",
+        "options": [
+          {
+            "selected": false,
+            "text": "trace",
+            "value": "trace"
+          },
+          {
+            "selected": false,
+            "text": "debug",
+            "value": "debug"
+          },
+          {
+            "selected": false,
+            "text": "info",
+            "value": "info"
+          },
+          {
+            "selected": false,
+            "text": "notice",
+            "value": "notice"
+          },
+          {
+            "selected": false,
+            "text": "warn",
+            "value": "warn"
+          },
+          {
+            "selected": false,
+            "text": "error",
+            "value": "error"
+          },
+          {
+            "selected": false,
+            "text": "critical",
+            "value": "critical"
+          },
+          {
+            "selected": false,
+            "text": "fatal",
+            "value": "fatal"
+          },
+          {
+            "selected": false,
+            "text": "unknown",
+            "value": "unknown"
+          }
+        ],
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "refresh": 0,
+        "skipUrlSync": false,
+        "description": "按 Loki 推断的 detected_level 过滤，覆盖全部日志。不用索引标签 level：它只覆盖约 5% 的日志，用它筛会让绝大多数 Pod 日志消失。"
+      },
+      {
+        "name": "rate_window",
+        "label": "速率窗口",
+        "type": "interval",
+        "query": "1m,5m,10m,30m,1h",
+        "auto": false,
+        "refresh": 0,
+        "current": {
+          "selected": true,
+          "text": "5m",
+          "value": "5m"
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "1m",
+            "value": "1m"
+          },
+          {
+            "selected": true,
+            "text": "5m",
+            "value": "5m"
+          },
+          {
+            "selected": false,
+            "text": "10m",
+            "value": "10m"
+          },
+          {
+            "selected": false,
+            "text": "30m",
+            "value": "30m"
+          },
+          {
+            "selected": false,
+            "text": "1h",
+            "value": "1h"
+          }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "QPS",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum(rate({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$rate_window]))",
+          "queryType": "range",
+          "legendFormat": "req/s"
+        }
+      ],
+      "description": "请求速率（RED 的 Rate）。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "none",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 2,
+      "title": "错误率",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 5,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum(count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | status =~ \"[45]..\" [$__range])) / sum(count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])) * 100",
+          "queryType": "instant",
+          "legendFormat": "%"
+        }
+      ],
+      "description": "4xx+5xx 占全部请求的百分比（RED 的 Errors）。阈值按**生产标准**定：1% 转橙、5% 转红，不是按本环境基线。本测试环境的 demo 应用故意返回约 13.6% 的错误（404/500/503），所以这里会一直显示红色——那是预期不是故障。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 3,
+      "title": "P95 响应时间",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 10,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "quantile_over_time(0.95, {project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | unwrap request_time [$__range]) by ()",
+          "queryType": "range",
+          "legendFormat": "p95"
+        }
+      ],
+      "description": "95 分位响应时间（RED 的 Duration）。用分位数不用平均值：99 个 10ms 加 1 个 10s，平均才 108ms 看着没事，P99 却是 10s。**必须 by () 聚合**——| json 把每个字段都变成 label，不写 by 会按全部 label 分组炸成几十条序列（坑位 40）。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "none",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 4,
+      "title": "传输流量",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 14,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum(sum_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | unwrap body_bytes_sent [$__range]))",
+          "queryType": "range",
+          "legendFormat": "bytes"
+        }
+      ],
+      "description": "时间范围内响应体总字节数，业务量的直观指标。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "decimals": 1,
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "none",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 5,
+      "title": "独立客户端",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 19,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "count(sum by (remote_addr) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
+          "queryType": "instant",
+          "legendFormat": "个"
+        }
+      ],
+      "description": "按 remote_addr 去重。注意这是**连接来源 IP**——经过 CDN 或负载均衡时它是代理的 IP，真实客户端要看 x_forwarded_for 字段。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "none",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 10,
+      "title": "请求趋势（按状态码）",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 16,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum by (status) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__interval]))",
+          "queryType": "range",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "description": "按状态码堆叠的请求数直方图。分桶用 $__interval（= Grafana 的 step）而不是速率窗口——后者是滑动窗口，相邻桶重叠会糊成一整块；配面板级 interval 设最小步长，避免 step 太细变成密集栅栏。",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "30s"
+    },
+    {
+      "id": 11,
+      "title": "按域名",
+      "type": "table",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "topk(30, sum by (host) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
+          "queryType": "instant"
+        }
+      ],
+      "description": "各业务域名的请求数。生产环境所有域名共用这一个入口，这里能看出流量构成。host 保留真实值不归一化——它是安全线索，配套有 GatewayHostCardinalityHigh 告警兜底。",
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "host": 1,
+              "Value #A": 2,
+              "Value": 3
+            },
+            "renameByName": {
+              "host": "域名",
+              "Value #A": "请求数",
+              "Value": "请求数"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "请求数",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "接口使用情况",
+      "type": "table",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "topk(30, sum by (host, method, path) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
+          "queryType": "instant"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum by (host, method, path) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | status =~ \"[45]..\" [$__range])) / sum by (host, method, path) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])) * 100",
+          "queryType": "instant"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "quantile_over_time(0.95, {project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | unwrap request_time [$__range]) by (host, method, path)",
+          "queryType": "instant"
+        }
+      ],
+      "description": "**这张表是整个看板的核心**：一张表同时回答「哪个接口最常用」（业务）和「哪个接口有问题」（排障）。按请求数倒序，最多 30 行。接口列已剥掉查询串（?id=1 和 ?id=2 合并），否则生产环境每个参数组合都会单独占一行。带查询串的完整 URI 排行在「流量来源与客户端」里。错误率为 0 的接口显示 0 而不是空白。",
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "错误率"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "noValue",
+                "value": "0"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "host": 1,
+              "method": 2,
+              "path": 3,
+              "Value #A": 4,
+              "Value #B": 5,
+              "Value #C": 6
+            },
+            "renameByName": {
+              "host": "域名",
+              "method": "方法",
+              "path": "接口",
+              "Value #A": "请求数",
+              "Value #B": "错误率",
+              "Value #C": "P95"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "请求数",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "错误与慢请求",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "panels": [
+        {
+          "id": 20,
+          "title": "网关开销 vs 后端耗时",
+          "type": "timeseries",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 21
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "quantile_over_time(0.95, {project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | unwrap request_time [$rate_window]) by ()",
+              "queryType": "range",
+              "legendFormat": "总耗时 P95"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "quantile_over_time(0.95, {project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | upstream_response_time != \"\" | unwrap upstream_response_time [$rate_window]) by ()",
+              "queryType": "range",
+              "legendFormat": "后端 P95"
+            }
+          ],
+          "description": "**排障第一个该看的面板**：两条线差得远说明慢在网关自己（连接池、TLS 握手、限流排队），贴在一起说明慢在后端。upstream_response_time 在请求没走到上游时是空串，所以先过滤非空再 unwrap，否则 unwrap 会报错。",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 21,
+          "title": "错误率趋势（按域名）",
+          "type": "timeseries",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 21
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "sum by (host) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | status =~ \"[45]..\" [$rate_window])) / sum by (host) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$rate_window])) * 100",
+              "queryType": "range",
+              "legendFormat": "{{host}}"
+            }
+          ],
+          "description": "哪个域名在出错、什么时候开始的。用比例而不是绝对数：比例能跨域名横向比较，绝对数只反映谁流量大。",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "never"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 22,
+          "title": "4xx / 5xx 请求原文",
+          "type": "logs",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 12,
+            "x": 0,
+            "y": 29
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "{project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | status >= 400",
+              "queryType": "range"
+            }
+          ],
+          "description": "数值比较和下拉用的正则两种写法都能用——| json 把 status 变成字符串label，但它仍是数字。",
+          "options": {
+            "showTime": true,
+            "showLabels": false,
+            "wrapLogMessage": true,
+            "prettifyLogMessage": true,
+            "sortOrder": "Descending",
+            "enableLogDetails": true,
+            "dedupStrategy": "none"
+          }
+        },
+        {
+          "id": 23,
+          "title": "慢请求 (>1s)",
+          "type": "logs",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 12,
+            "w": 12,
+            "x": 12,
+            "y": 29
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "{project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | request_time > 1",
+              "queryType": "range"
+            }
+          ],
+          "description": "展开单条可看 request_id，拿它到原始日志里查整个请求链路。",
+          "options": {
+            "showTime": true,
+            "showLabels": false,
+            "wrapLogMessage": true,
+            "prettifyLogMessage": true,
+            "sortOrder": "Descending",
+            "enableLogDetails": true,
+            "dedupStrategy": "none"
+          }
+        }
+      ]
+    },
+    {
+      "id": 400,
+      "type": "row",
+      "title": "流量来源与客户端",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "panels": [
+        {
+          "id": 30,
+          "title": "Top 来源页 (Referer)",
+          "type": "table",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 22
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "topk(10, sum by (referer) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
+              "queryType": "instant"
+            }
+          ],
+          "description": "流量从哪来。直接访问时 referer 是 \"-\" 或空。",
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false,
+              "reducer": [
+                "sum"
+              ],
+              "fields": ""
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "transformations": [
+            {
+              "id": "labelsToFields",
+              "options": {
+                "mode": "columns"
+              }
+            },
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "Time": 0,
+                  "referer": 1,
+                  "Value #A": 2,
+                  "Value": 3
+                },
+                "renameByName": {
+                  "referer": "来源页",
+                  "Value #A": "请求数",
+                  "Value": "请求数"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "请求数",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 31,
+          "title": "Top 客户端类型 (UA)",
+          "type": "table",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 22
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "topk(10, sum by (user_agent) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
+              "queryType": "instant"
+            }
+          ],
+          "description": "人还是爬虫、什么浏览器/SDK。UA 基数可能很高，已 topk 封顶。",
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false,
+              "reducer": [
+                "sum"
+              ],
+              "fields": ""
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "transformations": [
+            {
+              "id": "labelsToFields",
+              "options": {
+                "mode": "columns"
+              }
+            },
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "Time": 0,
+                  "user_agent": 1,
+                  "Value #A": 2,
+                  "Value": 3
+                },
+                "renameByName": {
+                  "user_agent": "User-Agent",
+                  "Value #A": "请求数",
+                  "Value": "请求数"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "请求数",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 32,
+          "title": "Top 完整 URI（含查询串）",
+          "type": "table",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 22
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "topk(10, sum by (uri) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
+              "queryType": "instant"
+            }
+          ],
+          "description": "和第一屏的接口表互补：那张剥掉了查询串，这张保留。想看「哪些参数组合被用得多」看这里。",
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false,
+              "reducer": [
+                "sum"
+              ],
+              "fields": ""
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "transformations": [
+            {
+              "id": "labelsToFields",
+              "options": {
+                "mode": "columns"
+              }
+            },
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "Time": 0,
+                  "uri": 1,
+                  "Value #A": 2,
+                  "Value": 3
+                },
+                "renameByName": {
+                  "uri": "URI",
+                  "Value #A": "请求数",
+                  "Value": "请求数"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "请求数",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 500,
+      "type": "row",
+      "title": "原始日志",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "panels": [
+        {
+          "id": 40,
+          "title": "访问日志（JSON 展开）",
+          "type": "logs",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 16,
+            "w": 24,
+            "x": 0,
+            "y": 23
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "{project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\"",
+              "queryType": "range"
+            }
+          ],
+          "description": "prettifyLogMessage 开着，JSON 会格式化展开。点单条左侧箭头可看解析出的全部字段，含 request_id。",
+          "options": {
+            "showTime": true,
+            "showLabels": false,
+            "wrapLogMessage": true,
+            "prettifyLogMessage": true,
+            "sortOrder": "Descending",
+            "enableLogDetails": true,
+            "dedupStrategy": "none"
+          }
+        }
+      ]
+    },
+    {
+      "id": 600,
+      "type": "row",
+      "title": "说明 / 怎么读这个看板",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "panels": [
+        {
+          "id": 91,
+          "type": "text",
+          "title": "",
+          "transparent": true,
+          "gridPos": {
+            "h": 14,
+            "w": 24,
+            "x": 0,
+            "y": 24
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "### 这个看板回答什么\n\n**所有业务域名的统一入口上，发生了什么、谁在用、用得怎么样。**\n\n两个用途共用一张表：顶部的「接口使用情况」同时回答\n*哪个接口最常用*（业务）和 *哪个接口有问题*（排障）。\n\n### 第一屏怎么读\n\n前五个指标是 RED 三件套加业务量：\n*QPS（Rate）→ 错误率（Errors）→ P95（Duration）→ 传输流量 → 独立客户端*。\n\n往下是请求趋势和按域名的分布，再往下是接口表。\n排障细节（4xx/5xx 原文、慢请求、网关 vs 后端耗时）在「错误与慢请求」折叠行里。\n\n### 几个容易误解的地方\n\n- **错误率阈值按生产标准定（1% 橙 / 5% 红），不是按本环境基线。**\n  本测试环境的 demo 应用**故意**返回约 13.6% 的错误（404/500/503），\n  所以这里会一直显示红色——那是预期，不是故障。\n- **接口列已剥掉查询串**（`/api/orders?id=1` 和 `?id=2` 合并成 `/api/orders`）。\n  不这样做的话生产环境每个参数组合都会单独占一行。带查询串的完整 URI\n  排行在「流量来源与客户端」折叠行里。\n- **`host` 保留真实值不做归一化**，这是刻意的：它是安全线索，\n  能看出谁在扫什么域名。配套有 `GatewayHostCardinalityHigh` 告警做护栏。\n- **「网关开销 vs 后端耗时」是排障第一个该看的面板**：\n  两条线差得远说明慢在网关自己，贴在一起说明慢在后端。\n"
+          }
+        }
+      ]
+    }
+  ]
+}

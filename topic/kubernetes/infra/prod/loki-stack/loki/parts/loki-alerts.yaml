@@ -1,0 +1,163 @@
+## Loki 告警规则（租户 jasper）
+##
+## ===== 自激反馈环（务必理解，否则规则必然误报）=====
+## Loki 的 ruler / querier / query-frontend 都会把「正在执行的查询语句」原样
+## 打进 level=info 日志。而 Alloy 又在采集 loki 命名空间的日志，于是任何
+## 「按内容匹配」的规则都会匹配到自己的查询文本，形成自激环。
+##
+## 实测：{namespace="loki"} |~ `AccessDenied|...`  匹配 44 条，全部是噪声。
+##
+## 解法：Loki 组件日志一律以 `level=` 开头，而查询文本里出现的 level=error /
+## AccessDenied 永远不在行首。因此用 `^level=error` 锚定即可精确区分。
+## 实测：加锚定后 → 0 条（正确，当前确实没有存储错误）；
+##       单纯的 `^level=error` → 34 条（真实错误行）。
+##
+## 跨命名空间的通用规则无法用这个锚定（各应用日志格式不同），
+## 改为直接排除 loki 命名空间——它由下面 loki-self 组专门覆盖。
+
+groups:
+  - name: log-volume
+    interval: 1m
+    rules:
+      # 检测「某节点的日志采集链路断了」。
+      #
+      # 前两版都栽在同一个坑上：用节点自身的日志量做判据。
+      # 实测这个集群里空闲的 control-plane 节点可以「整整一小时零日志」
+      # （master02/03 在 1h 窗口里根本不出现，3h 窗口才有 54 和 156 条），
+      # 所以无论阈值定多低、窗口开多大，要么空闲误报要么故障漏报。
+      #
+      # 现在改用 loki-canary 作为**可靠心跳源**：它是 DaemonSet，每节点一个，
+      # 持续写日志（实测约 1168 条/小时/节点），已加 control-plane 容忍覆盖全部 5 个节点。
+      # 它的日志同样被 Alloy 采集进 jasper 租户，带 node 标签。
+      #
+      # 判据：最近 15 分钟有 canary 日志的节点数，是否少于最近 24 小时出现过的节点数。
+      # 某节点的 Alloy 挂掉 -> 该节点 canary 日志不再进来 -> 15m 计数少一个 -> 触发。
+      # 不硬编码节点数量，增删节点自动适应。
+      #
+      # 依赖：lokiCanary.enabled=true 且带 control-plane 容忍。若关闭 canary，此规则失效。
+      #
+      # 选择器里的 node=~".+" 不能省：修复 __meta_kubernetes_pod_node_name 之前采集的
+      # 历史日志没有 node 标签，count by (node) 会把它们单独算成一组，
+      # 导致 24h 侧多出一个「幽灵节点」，表达式恒成立而永久误报。
+      - alert: NodeLogShippingStalled
+        expr: |
+          count(count by (node) (count_over_time({job="loki/canary", node=~".+"}[15m])))
+            < count(count by (node) (count_over_time({job="loki/canary", node=~".+"}[24h])))
+        for: 10m
+        labels:
+          severity: warning
+          component: alloy
+        annotations:
+          summary: "有节点的日志采集链路中断"
+          description: >-
+            过去 15 分钟只有 {{ $value }} 个节点在上报 canary 心跳，
+            少于过去 24 小时出现过的节点数。用下面两条查询对比找出是哪个节点：
+            count by (node) (count_over_time({job="loki/canary"}[24h]))
+            与 count by (node) (count_over_time({job="loki/canary"}[15m]))
+
+      # 整体写入速率突增，可能是某组件在刷日志，会挤占 Loki 写入配额
+      - alert: LogIngestionSpike
+        expr: sum(rate({job=~".+"}[5m])) > 500
+        for: 10m
+        labels:
+          severity: warning
+          component: loki
+        annotations:
+          summary: "日志写入速率异常升高"
+          description: "当前约 {{ $value | printf \"%.0f\" }} 条/秒，limits_config 限流为 8MB/s，请确认是否有组件在刷日志。"
+
+  - name: error-rate
+    interval: 1m
+    rules:
+      # 业务命名空间的错误日志速率。
+      # 排除 loki 命名空间：它的查询日志含大量 "error" 字样会造成自激，
+      # 且它自身已由 loki-self 组专门覆盖。
+      - alert: HighErrorLogRate
+        expr: |
+          sum by (namespace) (
+            rate({namespace=~".+", namespace!="loki"} |~ `(?i)(^|[^a-z])(error|fatal|panic)([^a-z]|$)` [5m])
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          component: workload
+        annotations:
+          summary: "命名空间 {{ $labels.namespace }} 错误日志偏多"
+          description: "过去 5 分钟错误日志约 {{ $value | printf \"%.2f\" }} 条/秒。"
+
+      # kubelet 报错是节点级问题的早期信号（journal 来源，无自激风险）
+      - alert: KubeletErrorLogs
+        expr: |
+          sum by (node) (
+            rate({unit="kubelet.service"} |~ `(?i)(^|[^a-z])(error|failed)([^a-z]|$)` [5m])
+          ) > 1
+        for: 15m
+        labels:
+          severity: warning
+          component: kubelet
+        annotations:
+          summary: "节点 {{ $labels.node }} 的 kubelet 持续报错"
+          description: "过去 5 分钟 kubelet 错误日志约 {{ $value | printf \"%.2f\" }} 条/秒。"
+
+  - name: loki-self
+    interval: 1m
+    rules:
+      # Loki 自身组件报错。^level=error 锚定行首，排除查询日志噪声。
+      - alert: LokiComponentErrors
+        expr: |
+          sum by (pod) (
+            rate({namespace="loki"} |~ `^level=error` [5m])
+          ) > 1
+        for: 10m
+        labels:
+          severity: critical
+          component: loki
+        annotations:
+          summary: "Loki 组件 {{ $labels.pod }} 持续报错"
+          description: "过去 5 分钟 error 日志约 {{ $value | printf \"%.2f\" }} 条/秒，检查对象存储连通性与 ring 状态。"
+
+      # 对象存储访问被拒，通常是 AK/SK 写反或桶权限问题。
+      # 必须同时满足「行首是 level=error」与「含存储错误关键字」。
+      # Gateway 的 host 标签保留【真实】的 Host 头（刻意不做白名单归一化，
+      # 否则 evil.example.com 和 scanner-test.cn 会糊成同一个 _other，
+      # 看不出谁在扫、扫的什么域名）。代价是基数由外部请求决定，
+      # 所以用这条告警兜底。
+      #
+      # 阈值按实测定：正常情况下 host 取值 = 实际配置的 hostname 数
+      # （当前 HTTPRoute 只配了 echo.jasper.org），实测基线个位数。
+      # 30 远高于正常值、又远低于真实扫描的规模（扫描器通常试几十上百个域名）。
+      #
+      # host=~".+" 不能省：没有 host 标签的流（nginx error log、agent 日志）
+      # 会被 count by (host) 归进空值一组，白白多算一个。
+      - alert: GatewayHostCardinalityHigh
+        expr: |
+          count(
+            count by (host) (
+              count_over_time({app=~".+-nginx", container="nginx", host=~".+"}[1h])
+            )
+          ) > 30
+        for: 10m
+        labels:
+          severity: warning
+          component: gateway
+        annotations:
+          summary: "Gateway 的 Host 取值异常增多，可能正在被扫描"
+          description: >-
+            过去 1 小时出现了 {{ $value }} 个不同的 Host 头，远超正常配置数。
+            可能有人在扫描，也可能是某个客户端在用随机 Host 访问。
+            用下面的查询看都是些什么：
+            topk(20, sum by (host) (count_over_time({app=~".+-nginx", container="nginx", host=~".+"}[1h])))
+            确认是攻击流量后，可在 Gateway 侧限制，或临时给 host 标签加归一化。
+
+      - alert: LokiObjectStorageDenied
+        expr: |
+          sum(
+            count_over_time({namespace="loki"} |~ `^level=error` |~ `AccessDenied|SignatureDoesNotMatch|NoSuchBucket` [10m])
+          ) > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: loki
+        annotations:
+          summary: "Loki 访问 MinIO 被拒绝"
+          description: "10 分钟内出现 {{ $value }} 次对象存储鉴权/桶错误，请核对 AK/SK 与桶 loki-test。"

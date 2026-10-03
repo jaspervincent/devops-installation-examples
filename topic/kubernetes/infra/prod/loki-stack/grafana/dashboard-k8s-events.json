@@ -1,0 +1,867 @@
+{
+  "uid": "loki-k8s-events",
+  "title": "Kubernetes 事件",
+  "description": "集群事件（OOMKilled / 调度失败 / 镜像拉取失败 / 探针失败等）。事件不在容器日志里，且 etcd 中只保留 1 小时，收进 Loki 才能事后追溯。采集端见 README 步骤 4b。",
+  "tags": [
+    "loki",
+    "logs",
+    "kubernetes",
+    "events"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "1m",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "editable": true,
+  "templating": {
+    "list": [
+      {
+        "name": "project",
+        "label": "项目",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "project",
+          "refId": "project",
+          "type": 1
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "sort": 1,
+        "description": "",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "environment",
+        "label": "环境",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "environment",
+          "refId": "environment",
+          "type": 1,
+          "stream": "{project=~\"$project\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "sort": 1,
+        "description": "",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "namespace",
+        "label": "命名空间",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "namespace",
+          "refId": "namespace",
+          "type": 1,
+          "stream": "{project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "sort": 1,
+        "description": "_cluster 表示集群级对象（Node/PV 等）的事件",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "level",
+        "label": "级别",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "level",
+          "refId": "level",
+          "type": 1,
+          "stream": "{project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "sort": 1,
+        "description": "warn = 事件的 type=Warning，info = Normal",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "reason",
+        "label": "原因",
+        "type": "textbox",
+        "query": ".+",
+        "current": {
+          "text": ".+",
+          "value": ".+"
+        },
+        "description": "按 reason 过滤，正则。例：FailedScheduling|Unhealthy。reason 是 logfmt 字段不是标签，所以只能手填。默认 .+ 匹配全部"
+      },
+      {
+        "name": "kind",
+        "label": "对象类型",
+        "type": "textbox",
+        "query": ".+",
+        "current": {
+          "text": ".+",
+          "value": ".+"
+        },
+        "description": "按涉及对象的 kind 过滤，正则。例：Pod|Node|Deployment。默认 .+ 匹配全部"
+      },
+      {
+        "name": "search",
+        "label": "关键字",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "description": "在事件正文里搜索，留空则不过滤"
+      },
+      {
+        "name": "rate_window",
+        "label": "速率窗口",
+        "type": "interval",
+        "query": "1m,5m,15m,1h,6h",
+        "auto": false,
+        "refresh": 0,
+        "current": {
+          "selected": true,
+          "text": "5m",
+          "value": "5m"
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "1m",
+            "value": "1m"
+          },
+          {
+            "selected": true,
+            "text": "5m",
+            "value": "5m"
+          },
+          {
+            "selected": false,
+            "text": "15m",
+            "value": "15m"
+          },
+          {
+            "selected": false,
+            "text": "1h",
+            "value": "1h"
+          },
+          {
+            "selected": false,
+            "text": "6h",
+            "value": "6h"
+          }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Warning 事件数",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum(count_over_time({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=\"warn\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$__range]))",
+          "queryType": "instant",
+          "legendFormat": "warning"
+        }
+      ],
+      "description": "仪表盘时间范围内 type=Warning 的事件条数。不受顶部「级别」下拉影响。**刻意不做阈值着色**：这个数随时间范围线性变化（30m 和 24h 差两个数量级），任何固定阈值在用户改范围时都会失真，要么天天飘红要么永远不亮。要「超过多少就告警」用 ruler 规则（带固定时间窗），别用面板颜色，见坑位 19。空结果显示 0 而不是 No data——「没有 Warning」和「采集断了」必须能区分开。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "none",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 2,
+      "title": "受影响对象",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "count(sum by (name) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=\"warn\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$__range])))",
+          "queryType": "instant",
+          "legendFormat": "对象数"
+        }
+      ],
+      "description": "有 Warning 事件的对象个数，按 name 去重。和左边一起看：事件数高但对象数只有一两个，通常是单点反复抖动，不是面上的问题。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "none",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 3,
+      "title": "最频繁故障原因",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "topk(1, sum by (reason) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=\"warn\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$__range])))",
+          "queryType": "range",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "description": "Warning 里出现次数最多的 reason，直接显示名字而不是数值。完整分布看下面的汇总表。这里用 range 查询不是 instant——instant 下 stat 显示成 Value #A，见 stat_text()。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "—"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center"
+      }
+    },
+    {
+      "id": 4,
+      "title": "事件趋势（Normal / Warning）",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 11,
+        "x": 13,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum by (level) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$rate_window]))",
+          "queryType": "range",
+          "legendFormat": "{{level}}"
+        }
+      ],
+      "description": "按「速率窗口」分桶的事件条数，堆叠显示 Normal 与 Warning 的构成。不受顶部「级别」下拉影响——它本身就是按级别分组的，再被收窄就只剩一种颜色。",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Warning 事件汇总",
+      "type": "table",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "topk(30, sum by (reason, kind, namespace) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=\"warn\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$__range])))",
+          "queryType": "instant"
+        }
+      ],
+      "description": "排障从这里开始：哪一类原因、什么对象类型、哪个命名空间，各多少次。按 reason+kind+namespace 聚合而**不带对象名**——带上会让一次探针抖动炸成几十行；具体是哪个对象去下面的事件流看。最多 30 行。这张表取代了原先四个写死 reason 的「常见故障速查」面板，新出现的故障类型会自动进来，不用改脚本。",
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "reason": 1,
+              "kind": 2,
+              "namespace": 3,
+              "Value #A": 4,
+              "Value": 5
+            },
+            "renameByName": {
+              "reason": "原因",
+              "kind": "类型",
+              "namespace": "命名空间",
+              "Value #A": "次数",
+              "Value": "次数"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "次数",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Warning 事件流",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "{project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=\"warn\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\"",
+          "queryType": "range"
+        }
+      ],
+      "description": "Warning 事件原文。点单条左侧箭头展开，logfmt 解析出的字段（reason / kind / name / reportingcontroller / msg）都在详情里，可直接点击做过滤。",
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "全部事件（含 Normal）",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "panels": [
+        {
+          "id": 10,
+          "title": "全部事件",
+          "type": "logs",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 14,
+            "w": 24,
+            "x": 0,
+            "y": 24
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "{project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=~\"$level\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\"",
+              "queryType": "range"
+            }
+          ],
+          "description": "包含 Normal。受顶部全部过滤器约束，含「级别」下拉。Normal 占九成左右（Scheduled / Pulled / Created 等例行动作）。",
+          "options": {
+            "showTime": true,
+            "showLabels": false,
+            "wrapLogMessage": true,
+            "sortOrder": "Descending",
+            "enableLogDetails": true,
+            "dedupStrategy": "none"
+          }
+        }
+      ]
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "维度分析",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "panels": [
+        {
+          "id": 20,
+          "title": "涉及对象数",
+          "type": "stat",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 0,
+            "y": 25
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "count(sum by (name) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=~\"$level\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$__range])))",
+              "queryType": "instant",
+              "legendFormat": "对象数"
+            }
+          ],
+          "description": "全部事件（含 Normal）涉及的对象个数，受顶部全部过滤器约束。",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "noValue": "0"
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "colorMode": "none",
+            "graphMode": "area"
+          }
+        },
+        {
+          "id": 21,
+          "title": "涉及对象列表",
+          "type": "table",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 18,
+            "x": 6,
+            "y": 25
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "topk(30, sum by (name, kind, namespace) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=~\"$level\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$__range])))",
+              "queryType": "instant"
+            }
+          ],
+          "description": "产生过事件的对象，按事件条数倒序，最多 30 行。对象数超过 30 时列表会少于左边的计数，是预期行为不是故障。",
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false,
+              "reducer": [
+                "sum"
+              ],
+              "fields": ""
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "transformations": [
+            {
+              "id": "labelsToFields",
+              "options": {
+                "mode": "columns"
+              }
+            },
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "Time": 0,
+                  "name": 1,
+                  "kind": 2,
+                  "namespace": 3,
+                  "Value #A": 4,
+                  "Value": 5
+                },
+                "renameByName": {
+                  "name": "对象",
+                  "kind": "类型",
+                  "namespace": "命名空间",
+                  "Value #A": "事件数",
+                  "Value": "事件数"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "事件数",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 22,
+          "title": "按原因的事件速率",
+          "type": "timeseries",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 33
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "sum by (reason) (rate({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=~\"$level\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$rate_window]))",
+              "queryType": "range",
+              "legendFormat": "{{reason}}"
+            }
+          ],
+          "description": "突然冒出的新 reason 往往就是故障的起点。",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 15,
+                "showPoints": "never"
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 23,
+          "title": "按命名空间的事件速率",
+          "type": "timeseries",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 33
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "sum by (namespace) (rate({project=~\"$project\", environment=~\"$environment\", source=\"kubernetes-events\", namespace=~\"$namespace\", level=~\"$level\"} | logfmt | reason =~ \"$reason\" | kind =~ \"$kind\" |= \"$search\" [$rate_window]))",
+              "queryType": "range",
+              "legendFormat": "{{namespace}}"
+            }
+          ],
+          "description": "namespace=_cluster 表示集群级对象（Node/PV 等）的事件。",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 15,
+                "showPoints": "never"
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 90,
+      "type": "row",
+      "title": "说明 / 怎么读这个看板",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "panels": [
+        {
+          "id": 91,
+          "type": "text",
+          "title": "",
+          "transparent": true,
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 25
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "### 这个看板回答什么\n\n**集群里发生了什么异常，涉及哪些对象。**\n\nKubernetes 事件不在容器日志里——Pod 根本没起来的时候没有容器日志，只有事件。\n而且 apiserver 没设 `--event-ttl`，事件在 etcd 里**只留 1 小时**，\n过期就永久查不到。收进 Loki 才能事后追溯。\n\n### 怎么读\n\n顶部第一屏**全部是 Warning**（事件的 `type=Warning`，采集时映射成 `level=warn`）。\n\n排障顺序：先看「Warning 事件汇总」——哪一类原因、什么对象类型、哪个命名空间；\n再到下面的「Warning 事件流」看原文和具体是哪个对象。\n\nNormal 事件（Scheduled / Pulled / Created 这些例行动作）量大但多数时候是噪声，\n收在「全部事件」折叠行里。\n\n### 两个容易误解的地方\n\n- **默认时间范围 30m。** 这是按真实集群的事件量定的——生产环境事件多，\n  默认扫 24h 会把查询压垮。本测试环境事件稀疏（24 小时才三百条），\n  30m 打开**经常是空的，那不是故障**，往上调时间范围即可。\n- **第一屏的 Warning 面板不受顶部「级别」下拉影响**（硬编码 `level=\"warn\"`），\n  否则选了 info 整个排障区会全空。级别下拉对「全部事件」和「维度分析」生效。\n\n采集端配置见 README 的「步骤 4b — Alloy Events」。\n"
+          }
+        }
+      ]
+    }
+  ]
+}

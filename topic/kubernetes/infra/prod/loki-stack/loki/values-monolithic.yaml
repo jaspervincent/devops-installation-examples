@@ -1,0 +1,94 @@
+loki:
+  commonConfig:
+    # 单体模式只有 1 个实例，副本因子必须为 1，否则 ring 凑不齐 quorum 导致写入失败
+    replication_factor: 1
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: s3
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+  pattern_ingester:
+    enabled: true
+  limits_config:
+    allow_structured_metadata: true
+    volume_enabled: true
+    retention_period: 672h # 28 days retention
+  compactor:
+    retention_enabled: true
+    delete_request_store: s3
+  rulerConfig:
+    enable_api: true
+    alertmanager_url: http://prom:9093
+
+  querier:
+    max_concurrent: 4
+
+  storage:
+    type: s3
+    bucketNames:
+      chunks: "loki-test"
+      ruler: "loki-test"
+    s3:
+      # MinIO S3 API 端口是 9000（9001 是 console）
+      endpoint: 10.0.0.101:9000
+      # 注意：原文件里 AK/SK 写反了，已对调（MinIO AK 20 字符，SK 40 字符）
+      accessKeyId: d3qFSWw6zosYK4xyHeZC
+      secretAccessKey: iJ8gwfA5lZ3xhhf0n0EarjAkJgByNJKOnZWjJsUd
+      s3ForcePathStyle: true
+      # Allows insecure (HTTP) connections (true/false)
+      insecure: true
+
+deploymentMode: Monolithic
+
+singleBinary:
+  replicas: 1
+  # 不要设 kind: Deployment —— chart 默认的 singleBinary.strategy 含 rollingUpdate.partition，
+  # 那是 StatefulSet 专有字段，渲染进 Deployment.spec.strategy 会被 API schema 拒绝。
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 10Gi
+
+ingester:
+  replicas: 0
+querier:
+  replicas: 0
+queryFrontend:
+  replicas: 0
+queryScheduler:
+  replicas: 0
+distributor:
+  replicas: 0
+compactor:
+  replicas: 0
+indexGateway:
+  replicas: 0
+
+# Disable minio storage
+minio:
+  enabled: false
+
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0
+
+# 节点只有 ~3.2Gi 可用内存，chunks-cache 默认请求 9830Mi 永远调度不上，单体模式下关掉
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
+# 入口 svc 走 Cilium LB IPAM（default-pool: 10.0.0.10-50）+ L2 announcement
+gateway:
+  service:
+    type: LoadBalancer
+    # 固定 LB IP（Cilium LB IPAM 专用注解），避免 svc 重建后地址漂移
+    annotations:
+      io.cilium/lb-ipam-ips: "10.0.0.12"

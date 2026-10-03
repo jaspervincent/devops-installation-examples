@@ -1,0 +1,301 @@
+// ============================================================================
+// Grafana Alloy 采集配置
+//   A. Kubernetes Pod 容器日志  (/var/log/pods)
+//   B. 宿主机 systemd journal   (kubelet / containerd / sshd / 内核 等)
+//   C. 公共处理 + 写入 Loki
+//
+// 本文件由外部 ConfigMap `alloy-config` 挂载，不在 Helm values 里。
+// 修改后：
+//   kubectl create cm alloy-config -n alloy --from-file=config.alloy=config.alloy \
+//     --dry-run=client -o yaml | kubectl apply -f -
+// config-reloader 边车会自动触发 Alloy 热加载，不需要重启 Pod。
+// ============================================================================
+
+// ############################################################################
+// A. Pod 容器日志
+// ############################################################################
+
+// 只发现「本节点」的 Pod。DaemonSet 每实例各管各的节点，用 field selector
+// 在 API Server 侧过滤，避免每个实例都拉全集群 Pod 列表。
+// K8S_NODE_NAME 由 Helm chart 自动注入 (fieldRef: spec.nodeName)。
+discovery.kubernetes "pods" {
+  role = "pod"
+  selectors {
+    role  = "pod"
+    field = "spec.nodeName=" + sys.env("K8S_NODE_NAME")
+  }
+}
+
+discovery.relabel "pod_logs" {
+  targets = discovery.kubernetes.pods.targets
+
+  rule {
+    source_labels = ["__meta_kubernetes_namespace"]
+    target_label  = "namespace"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_name"]
+    target_label  = "pod"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_container_name"]
+    target_label  = "container"
+  }
+  // 注意: role=pod 的节点元标签是 __meta_kubernetes_pod_node_name,
+  //       不是 __meta_kubernetes_node_name（后者取不到值）
+  rule {
+    source_labels = ["__meta_kubernetes_pod_node_name"]
+    target_label  = "node"
+  }
+  // job = <namespace>/<container>
+  rule {
+    source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_container_name"]
+    separator     = "/"
+    target_label  = "job"
+  }
+
+  // ---- 服务名（研发最常用的过滤维度）----
+  // pod 名带 ReplicaSet 哈希，每次发版都变，不适合给人用。
+  // regex "(.+)" 的作用是「源标签为空时不覆盖」——默认 regex 是 (.*)，
+  // 空值也会匹配并把目标标签置空。
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app"]
+    regex         = "(.+)"
+    target_label  = "app"
+  }
+  // 标准标签优先级更高，存在则覆盖上面的
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+    regex         = "(.+)"
+    target_label  = "app"
+  }
+
+  // containerd 路径: /var/log/pods/<ns>_<pod>_<uid>/<container>/<n>.log
+  rule {
+    source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+    separator     = "/"
+    action        = "replace"
+    replacement   = "/var/log/pods/*$1/*.log"
+    target_label  = "__path__"
+  }
+}
+
+local.file_match "pod_logs" {
+  path_targets = discovery.relabel.pod_logs.output
+}
+
+loki.source.file "pod_logs" {
+  targets    = local.file_match.pod_logs.targets
+  forward_to = [loki.process.cri.receiver]
+}
+
+// containerd 行格式: <RFC3339Nano> <stdout|stderr> <F|P> <message>
+// stage.cri 提取时间戳与 stream，并拼回被切分的长行(P/F)
+loki.process "cri" {
+  forward_to = [loki.process.common.receiver]
+
+  stage.cri { }
+
+  // ---- 多行合并（对所有 Pod 日志生效，不需要任何标注）----
+  //
+  // multiline 的本质是「不匹配 firstline 的行 = 上一行的续行」。对每行都匹配
+  // firstline 的服务，它是 no-op。所以只要 firstline 覆盖得够全，就不必知道
+  // 谁是 Java 应用——原先那套 Pod 注解 loki.io/multiline 因此不再需要。
+  //
+  // 实测各服务【原始容器日志】里不匹配下面这个 firstline 的行占比：
+  //   order-service 43.0% / user-service 42.0%  <- 正是要合并的堆栈
+  //   web-gateway / loki-ingester / cilium-agent 全是 0%  <- 不受影响
+  //
+  // 【为什么放在这里而不是 common 里】systemd journal 的消息体 100% 不匹配
+  // （时间戳在 journal 元数据里，不在行内），放 common 会把宿主机日志糊成一坨。
+  // 放在 cri 这条 pod 专用路径上，journal 完全不经过它。
+  //
+  // firstline 覆盖的格式：
+  //   2026-09-30T10:00:00 / 2026-09-30 10:00:00   ISO 时间戳（Java、Spring 等）
+  //   10.0.0.1 - - [...]                           access log，IP 开头
+  //   {"time":...}                                 JSON
+  //   level=info ts=...                            logfmt（Loki/Alloy 各组件）
+  //   I0930 10:00:00                               klog（k8s 组件）
+  //   2026/09/30 10:00:00                          nginx error log
+  //
+  // 新增服务如果日志行首格式不在上面这几类里，它的每一行都会被当成续行
+  // 合并到上一条——排查「某服务日志糊成一坨」时先查这里。max_lines 是兜底。
+  stage.multiline {
+    firstline     = "^(\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}:\\d{2}|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}[ :]|\\{|[a-z_]+=|[IWEF]\\d{4} \\d{2}:\\d{2}:\\d{2}|\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2})"
+    // 1s 而不是 3s：multiline 要等下一行或超时才能确定边界，这个等待加在
+    // 【所有】Pod 日志上。高频服务几乎无感，但像 gateway-public-nginx
+    // （2 小时才 34 行）每条都要等满超时才发出。
+    max_wait_time = "1s"
+    max_lines     = 200
+  }
+
+  // 日志来源分类：pod（应用容器） vs systemd（宿主机系统服务）
+  stage.static_labels {
+    values = {
+      source = "pod",
+    }
+  }
+
+  // ---- JSON access log 的级别：由 HTTP 状态码映射 ----
+  //
+  // access log 里没有任何级别字段——它记录的是「一次请求」不是「一个事件」，
+  // 本来就没有级别概念。所以 Loki 服务端的 discover_log_levels 推断不出来，
+  // 在 Grafana 里显示成 UNK（detected_level=unknown）。
+  // 唯一合理的级别来源是状态码：5xx=error / 4xx=warn / 其余=info。
+  //
+  // selector 用【行过滤器】限定范围，只让「行首是 { 且含 status 字段」的行进来。
+  // 不这么限定的话 stage.json 会在所有非 JSON 日志上报解析错误。
+  // 注意这里刻意没有写死服务名——任何输出这种 JSON access log 的服务都能用上。
+  stage.match {
+    // LogQL 的行过滤器【只接受双引号字符串】，写反引号会在 reload 时报
+    // "unexpected IDENTIFIER, expecting STRING"，而 alloy validate 查不出来。
+    // 这里只筛「行首是 {」，status 字段是否存在交给下面的 template 判断——
+    // init 容器也输出 JSON，但没有 status。
+    selector = "{source=\"pod\"} |~ \"^\\\\{\""
+
+    stage.json {
+      expressions = {
+        status = "status",
+        host   = "host",
+      }
+    }
+
+    // stage.json 提取出来的数字在 extracted map 里是 float64，
+    // 先 printf 成整数字符串再 atoi，直接把 float64 喂给 atoi 会失败。
+    stage.template {
+      source   = "level"
+      // .status 不存在时输出空串，stage.labels 会跳过空值、不打这个标签。
+      // 用 sprig 的 int 而不是 printf+atoi：stage.json 提取出的 status
+      // 实测是字符串而非 float64，printf "%.0f" 会失败得到 0，
+      // 结果 404 被错判成 info。int 对字符串和浮点都能转。
+      template = "{{ if .status }}{{ $s := .status | int }}{{ if ge $s 500 }}error{{ else if ge $s 400 }}warn{{ else }}info{{ end }}{{ end }}"
+    }
+
+    // ---- host 标签：保留真实值 ----
+    //
+    // $host 取自请求的 Host 头，任何人都能任意制造——实测发
+    // evil.example.com / scanner-test.cn / 1.2.3.4 这些无关 Host，
+    // 虽然 Gateway 都返回 404，$host 照样被记进 access log。
+    //
+    // 【刻意不做白名单归一化】。曾经把白名单外的值归成 _other 来控制基数，
+    // 但那样等于把「谁在扫、扫的什么域名」这条安全线索丢掉——
+    // evil.example.com 和 scanner-test.cn 变成同一个值，看不出任何东西。
+    // access log 的价值之一就是暴露异常访问，不该在采集端提前丢弃。
+    //
+    // 基数风险改用「护栏 + 监控」应对：
+    //   - 这里截断到 253 字符（域名理论最大长度），防止恶意构造的超长 Host
+    //     顶破 Loki 的 max_label_value_length(2048) 导致整批写入被拒
+    //   - 配套告警 GatewayHostCardinalityHigh 盯住 host 基数，
+    //     真被扫了能及时发现（见 loki/parts/loki-alerts.yaml）
+    stage.template {
+      source   = "host_label"
+      template = "{{ if .host }}{{ .host | trunc 253 }}{{ end }}"
+    }
+
+    stage.labels {
+      values = {
+        level = "",
+        // 标签名 host，取值来自上面截断过的 host_label
+        host  = "host_label",
+      }
+    }
+  }
+}
+
+// ############################################################################
+// B. 宿主机 systemd journal
+//    Ubuntu 26.04 未启用 rsyslog，kubelet/containerd/sshd/内核 日志全在 journald
+// ############################################################################
+
+discovery.relabel "journal" {
+  targets = []
+
+  // systemd unit 全名，精确过滤用：{unit="kubelet.service"}
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+  rule {
+    source_labels = ["__journal__hostname"]
+    target_label  = "node"
+  }
+  // 非 systemd 托管的来源（内核等）靠这个区分
+  rule {
+    source_labels = ["__journal_syslog_identifier"]
+    target_label  = "syslog_identifier"
+  }
+  // syslog 优先级: emerg/alert/crit/err/warning/notice/info/debug
+  rule {
+    source_labels = ["__journal_priority_keyword"]
+    target_label  = "level"
+  }
+
+  // ---- 让系统服务也有 app 标签 ----
+  // 否则 Grafana 里按「服务」筛选时完全找不到 kubelet/containerd 这类日志。
+  // 先取 unit 全名兜底，再用去掉 .service 后缀的短名覆盖，
+  // 这样下拉框里看到的是 kubelet / containerd，而不是 kubelet.service。
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    regex         = "(.+)"
+    target_label  = "app"
+  }
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    regex         = "(.+)\\.service"
+    target_label  = "app"
+  }
+}
+
+loki.source.journal "host" {
+  path = "/var/log/journal"
+
+  // 只读取最近 1 分钟内的条目。
+  // Alloy 的 positions 存在 /tmp/alloy（emptyDir），Pod 重启即丢失，
+  // 因此每次启动都从「当前时刻附近」开始，不会回灌 152MB 历史。
+  max_age = "1m"
+
+  relabel_rules = discovery.relabel.journal.rules
+
+  // namespace 用 _system 占位：Grafana 看板普遍用 namespace=~"$namespace" 过滤，
+  // 而 LogQL 的 =~".+" 要求标签存在且非空。不给 namespace 的话，
+  // 系统日志在所有按命名空间筛选的面板里都会消失。
+  labels = {
+    job       = "systemd-journal",
+    source    = "systemd",
+    namespace = "_system",
+  }
+
+  forward_to = [loki.process.common.receiver]
+}
+
+// ############################################################################
+// C. 公共处理 —— Pod 日志与 journal 两条路径都必须经过这里
+// ############################################################################
+
+loki.process "common" {
+  forward_to = [loki.write.default.receiver]
+
+  // 多行合并【不在这里】——它只作用于 pod 路径，放在 loki.process "cri" 里。
+  // 原因：systemd journal 的消息体 100% 不匹配时间戳行首，
+  // 在这条公共路径上做合并会把宿主机日志糊成一坨。
+
+  stage.static_labels {
+    values = {
+      project     = "jp",
+      environment = "test",
+    }
+  }
+}
+
+// ############################################################################
+// D. 写入 Loki
+// ############################################################################
+
+loki.write "default" {
+  endpoint {
+    // 走集群内 ClusterIP，不经过 LoadBalancer：
+    // 写入流量是东西向的，没必要绕到外部 IP 再回来
+    url       = "http://loki-gateway.loki.svc.cluster.local/loki/api/v1/push"
+    tenant_id = "jasper"    // 等价于请求头 X-Scope-OrgID
+  }
+}

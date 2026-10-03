@@ -1,0 +1,59 @@
+# ==============================================================================
+# Grafana Alloy - 日志采集 (DaemonSet, 5 节点全覆盖)
+#   A. Kubernetes Pod 容器日志  /var/log/pods
+#   B. 宿主机 systemd journal   /var/log/journal
+# 输出: http://loki-gateway.loki.svc.cluster.local (集群内 ClusterIP)，租户 jasper
+# chart: alloy-1.13.0 / app: v1.20.0
+#
+# 采集配置【不在本文件里】，由外部 ConfigMap `alloy-config` 提供，
+# 源文件是同目录的 config.alloy。修改流程：
+#
+#   vi config.alloy
+#   kubectl create cm alloy-config -n alloy \
+#     --from-file=config.alloy=config.alloy \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#
+# config-reloader 边车监听 /etc/alloy 并调用 Alloy 的 /-/reload，
+# 配置会自动热加载，不需要 helm upgrade，也不需要重启 Pod。
+# ==============================================================================
+
+controller:
+  type: daemonset
+  tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  volumes:
+    extra:
+    - name: machine-id
+      hostPath:
+        path: /etc/machine-id
+        type: File
+crds:
+  create: false
+rbac:
+  create: true
+alloy:
+  mounts:
+    varlog: true
+    extra:
+    - name: machine-id
+      mountPath: /etc/machine-id
+      readOnly: true
+  securityContext:
+    runAsUser: 0
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  configMap:
+    create: false
+    name: alloy-config
+    key: config.alloy
+service:
+  enabled: true
+  type: LoadBalancer
+  annotations:
+    io.cilium/lb-ipam-ips: 10.0.0.13

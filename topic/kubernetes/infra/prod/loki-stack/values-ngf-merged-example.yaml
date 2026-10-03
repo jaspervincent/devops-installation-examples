@@ -1,0 +1,98 @@
+# ==============================================================================
+# nginx-gateway-fabric —— 生产环境 values 合并示例
+#
+# 关键：chart 里有【两个独立的 patches 键】，作用对象不同，所以不用合并成一个，
+# 各放各的位置即可：
+#
+#   nginx.patches          -> NginxProxy.spec.kubernetes.deployment.patches
+#                             （也同时写进 daemonSet.patches）
+#                             作用于 NGINX 的 Deployment/DaemonSet
+#
+#   nginx.service.patches  -> NginxProxy.spec.kubernetes.service.patches
+#                             作用于 NGINX 的 Service
+#
+# 判断某个 patch 该放哪：看你要改的字段最终属于哪个 K8s 对象。
+#   LoadBalancer 的 annotations  -> Service   -> nginx.service.patches
+#   volumes / volumeMounts / env -> Deployment-> nginx.patches
+# ==============================================================================
+
+nginxGateway:
+  # snippets.enable 同时启用 SnippetsFilter 和 SnippetsPolicy。
+  # 不要用已废弃的 snippetsFilters.enable，它只开前者。
+  snippets:
+    enable: true
+
+nginx:
+  service:
+    type: LoadBalancer
+    externalTrafficPolicy: Cluster
+
+    # ---- 作用于 Service ----
+    patches:
+    - type: StrategicMerge
+      value:
+        metadata:
+          annotations:
+            # 创建公网 NLB
+            service.beta.kubernetes.io/aws-load-balancer-type: "external"
+            service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+            service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+            service.beta.kubernetes.io/aws-load-balancer-subnets: "subnet-0a415b6c73,subnet-0efd7596"
+            service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags: "Env=Dev"
+            # 让 AWS NLB 向外发 Proxy-Protocol v2
+            service.beta.kubernetes.io/aws-load-balancer-proxy-protocol: "*"
+
+  # ---- 作用于 Deployment ----
+  # 时区：镜像是 Alpine，既没有 /etc/localtime 也没有 tzdata，
+  # 只设 TZ 会静默回退 UTC，必须把宿主机的时区文件挂进来。
+  #
+  # 必须用 JSONPatch 不能用 StrategicMerge：后者在 NGF provisioner 这条路径上
+  # 会按【索引】覆盖而不是按 name 合并，只含一个元素的 volumes 会盖掉
+  # volumes[0]（原本是 projected 类型的 token），导致
+  # "may not specify more than 1 volume type"，9 个组件起不来。
+  # JSONPatch 的 "/-" 是追加到列表末尾，不碰任何现有元素。
+  patches:
+  - type: JSONPatch
+    value:
+    - op: add
+      path: /spec/template/spec/volumes/-
+      value:
+        name: tz-shanghai
+        hostPath:
+          path: /usr/share/zoneinfo/Asia/Shanghai
+          type: File
+    - op: add
+      path: /spec/template/spec/containers/0/volumeMounts/-
+      value:
+        name: tz-shanghai
+        mountPath: /etc/localtime
+        readOnly: true
+
+  # nginx.config 原样渲染进 NginxProxy 的 spec（logging 等）
+  config:
+    # ---- PROXY protocol 的【接收侧】配置 ----
+    # 注意在 nginx.config 下，和 logging 平级——chart 把整个 nginx.config
+    # toYaml 渲染进 NginxProxy 的 spec。放到 nginx 下会被静默忽略
+    # （helm template 出来是 rewriteClientIP: null，不会报错，很难发现）。
+    #
+    # 只在 Service 上开 aws-load-balancer-proxy-protocol 是不够的：
+    # NLB 会在每个连接前发一段 PROXY v2 头，nginx 没配着收的话，
+    # 会把那段二进制当成 HTTP 请求行解析，直接 400 或断连。
+    #
+    # mode: ProxyProtocol 让 NGF 在 listen 上加 proxy_protocol，
+    # 并设 real_ip_header proxy_protocol —— 后端才能拿到真实客户端 IP，
+    # 否则 access log 里 remote_addr 全是 NLB 的内网地址。
+    #
+    # trustedAddresses 是【必填】：mode 设了而它为空，NGINX 不会重写客户端 IP。
+    # 填 NLB 所在子网的 CIDR，别图省事写 0.0.0.0/0——那等于谁都能伪造来源 IP。
+    rewriteClientIP:
+      mode: ProxyProtocol
+      trustedAddresses:
+      - type: CIDR
+        value: 10.0.0.0/16        # 改成你 NLB 子网的实际 CIDR
+
+    logging:
+      accessLog:
+        escape: json
+        format: >-
+          {"time":"$time_iso8601","remote_addr":"$remote_addr","x_forwarded_for":"$http_x_forwarded_for","host":"$host","method":"$request_method","uri":"$request_uri","protocol":"$server_protocol","status":$status,"body_bytes_sent":$body_bytes_sent,"request_length":$request_length,"request_time":$request_time,"upstream_addr":"$upstream_addr","upstream_status":"$upstream_status","upstream_response_time":"$upstream_response_time","referer":"$http_referer","user_agent":"$http_user_agent","request_id":"$request_id"}

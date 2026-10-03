@@ -1,0 +1,2814 @@
+#+title: Loki + Alloy 日志栈 — 完整重建手册
+#+subtitle: 部署、验证、坑位
+#+startup: content indent
+#+options: toc:2 num:nil
+
+* Loki + Alloy 日志栈 — 完整重建手册
+集群: k8s 1.37.1 / 5 节点 arm64 / Ubuntu 26.04
+节点: master01-03（带 =node-role.kubernetes.io/control-plane:NoSchedule= 污点）、node01-02
+单节点可分配内存: ~3.2Gi
+
+对象存储: MinIO =http://10.0.0.101:9000= （9001 是 console），桶 =loki-test=
+Grafana:  =http://10.0.0.101:3000= （装在 master01 宿主机上，不在 k8s 内）
+租户: =jasper= （Loki 开启多租户，所有读写必须带 =X-Scope-OrgID= ）
+
+** 网络拓扑（读写分离）
+#+begin_example
+集群内 Alloy ──写──> loki-gateway.loki.svc.cluster.local   [ClusterIP，不暴露]
+集群外 Grafana ─查──> http://10.0.0.12                      [LoadBalancer，只读网关]
+                                                            push/otlp/管理接口一律 403
+#+end_example
+
+只读网关是一个独立的 nginx Deployment（定义在 Loki values 的 =extraObjects= 里），
+只把查询接口转发给 query-frontend，写入与管理接口直接拒绝。
+LoadBalancer IP 由 Cilium LB IPAM 分配，用 =io.cilium/lb-ipam-ips= 注解固定为 10.0.0.12。
+
+--------------
+
+** 部署形态
+*全部组件都是 Deployment，没有任何 PVC。*
+
+| 组件                             | kind        | /var/loki | 说明                              |
+|----------------------------------+-------------+-----------+-----------------------------------|
+| ingester x3                      | Deployment  | emptyDir  | WAL + tsdb-shipper-active         |
+| distributor x2 / querier x2      | Deployment  | emptyDir  | 本就无状态                        |
+| query-frontend / query-scheduler | Deployment  | emptyDir  | 本就无状态                        |
+| index-gateway                    | Deployment  | emptyDir  | 只是 tsdb 缓存，丢了从 S3 重下    |
+| compactor                        | Deployment  | emptyDir  | 只是工作目录                      |
+| ruler                            | Deployment  | emptyDir  | 规则本体在 ConfigMap              |
+| pattern-ingester                 | Deployment  | emptyDir  | 实测内容为空                      |
+| chunks-cache / results-cache     | StatefulSet | —         | memcached，chart 自带，需稳定 DNS |
+
+*为什么不用 PVC*（实测 7 个 PVC 的实际内容后得出）：
+
+- index-gateway(176K 缓存) / compactor(68K 工作目录) / ruler(16K 临时目录) /
+  pattern-ingester(空) —— 全都是可重建的临时数据，本来就不需要持久化。
+
+- ingester(7~8M，WAL + 正在构建的索引) 看似需要，但在本环境价值有限：
+
+  - =flush_on_shutdown: true=，优雅重启会把数据全部刷到 MinIO，本就不丢；
+  - =replication_factor: 3=，每条日志在 3 个 ingester 上都有；
+  - *local-path 的 PV 带 nodeAffinity 绑死在节点上*，而 ingester 多个副本会落在
+    同一节点（2 worker 只能这么排）。该节点真挂了，PVC 跟着一起没，救不了。
+
+  也就是说 PVC 只能防「Pod 被强杀且节点还活着」这一种情况，代价却是
+  6 个 PVC + 对 StorageClass 的依赖。权衡后全部去掉。
+
+#+begin_quote
+因此 *local-path-provisioner 现在是可选的*——重建时若不打算加 PVC，
+步骤 1 可以跳过。保留它不影响，后续想加持久化时直接可用。
+#+end_quote
+
+*配置与规则文件都是 ConfigMap 挂载，与 PVC 无关*：
+
+| 内容                        | 来源                                | 挂载点                   |
+|-----------------------------+-------------------------------------+--------------------------|
+| Loki 主配置                 | Secret/ConfigMap（chart 生成）      | =/etc/loki/config=       |
+| 告警规则                    | ConfigMap =loki-ruler-rules-jasper= | =/etc/loki/rules/jasper= |
+| 只读网关 nginx              | ConfigMap =loki-read-gateway=       | =/etc/nginx/nginx.conf=  |
+| Alloy 采集配置（DaemonSet） | ConfigMap =alloy-config=            | =/etc/alloy=             |
+| Alloy 采集配置（Events）    | ConfigMap =alloy-events-config=     | =/etc/alloy=             |
+
+--------------
+
+** 目录
+#+begin_example
+loki-stack/
+├── README.org                          # 本文件（部署与验证）
+├── COMPONENTS.org                      # 各组件作用说明、数据流、故障影响速查
+├── PRODUCTION.org                      # 生产环境方案（AWS 新加坡 + 阿里云香港）
+├── cilium-lb-pool.yaml                # Cilium LB IPAM 地址池 10.0.0.10-50
+├── cilium-l2-announcement.yaml        # Cilium L2 宣告策略
+├── loki/
+│   ├── loki-18.13.5.tgz               # chart 离线包
+│   ├── values-distributed.yaml        # 微服务模式（当前运行）
+│   ├── values-monolithic.yaml         # 单体模式（回滚备用）
+│   └── parts/
+│       ├── read-gateway-nginx.conf    # 只读网关 nginx 配置（已内嵌进 values）
+│       └── loki-alerts.yaml           # 告警规则（已内嵌进 values）
+├── alloy/
+│   ├── alloy-1.13.0.tgz               # chart 离线包（两个 release 共用）
+│   ├── values-alloy.yaml              # release: alloy —— DaemonSet，Pod 日志 + journal
+│   ├── config.alloy                   #   ↑ 采集配置，外部 ConfigMap alloy-config
+│   ├── values-alloy-events.yaml       # release: alloy-events —— Deployment 单副本，k8s Events
+│   ├── config-events.alloy            #   ↑ 采集配置，外部 ConfigMap alloy-events-config
+│   └── lq                             # 查询用的 curl wrapper
+└── grafana/
+    ├── dashboard-log-overview.json      # 运维：日志总览
+    ├── dashboard-dev-troubleshoot.json  # 研发：排障
+    ├── dashboard-gateway-access.json    # Gateway JSON 访问日志
+    ├── dashboard-k8s-events.json        # Kubernetes 事件
+    └── make-*.py                        # 各看板的生成+导入脚本（JSON 由脚本产出）
+#+end_example
+
+#+begin_quote
+=parts/= 下的文件是*源文件*，通过脚本内嵌进 values。改完 parts 后需重新生成 values
+（见文末「如何修改配置」）。
+#+end_quote
+
+--------------
+
+** 重建顺序
+必须按顺序执行，后一步依赖前一步（步骤 1 是唯一可跳过的，见该步说明）。
+
+*** 前置 0 — Helm 仓库
+#+begin_src sh
+helm repo add grafana-community https://grafana-community.github.io/helm-charts
+helm repo update
+#+end_src
+
+#+begin_quote
+本目录已存离线 chart 包，网络不好时直接用 tgz，无需仓库。
+#+end_quote
+
+*** 步骤 1 — StorageClass（可选，当前部署用不到）
+*当前这套是零 PVC 部署，这一步可以整个跳过* ，理由见「部署形态」。
+
+集群默认没有任何 StorageClass。只有当你打算给某个组件加回
+=persistence.enabled: true= 时才需要先装它，否则那个 PVC 会永久 Pending。
+装了也不影响——没有 PVC 在用时它只是闲着。
+
+#+begin_src sh
+kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.31/deploy/local-path-storage.yaml
+kubectl -n local-path-storage rollout status deploy/local-path-provisioner
+
+kubectl patch storageclass local-path \
+  -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+
+kubectl get sc   # local-path 应显示 (default)
+#+end_src
+
+*** 步骤 2 — Cilium LoadBalancer
+前提: Cilium 已启用 =enable-lb-ipam=、=enable-l2-announcements=，=kube-proxy-replacement=true=。
+
+#+begin_src sh
+kubectl apply -f cilium-lb-pool.yaml
+kubectl apply -f cilium-l2-announcement.yaml
+kubectl get ciliumloadbalancerippools
+#+end_src
+
+#+begin_quote
+该方案依赖二层 ARP 宣告，*仅适用于裸机/本地虚拟机*。EKS 等云环境不适用
+（AWS CCM 会接管 LoadBalancer，且 VPC 不转发任意 ARP 宣告）。
+#+end_quote
+
+*** 步骤 3 — Loki（微服务模式）
+*先创建告警规则 ConfigMap*。ruler 通过 =extraVolumes= 挂载它，
+不存在的话 ruler 会卡在 ContainerCreating：
+
+#+begin_src sh
+kubectl create namespace loki --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create configmap loki-alert-rules -n loki \
+  --from-file=alerts.yaml=loki/parts/loki-alerts.yaml \
+  --dry-run=client -o yaml | kubectl apply -f -
+#+end_src
+
+*再在 MinIO 建专用用户和策略* 。Loki 的凭证必须限定在 =loki-test= 桶——
+不要用 =admin= 名下的服务账号，那是管理员等价权限，泄露后整个 MinIO 失守。
+
+#+begin_src sh
+cat > /tmp/loki-rw.json <<'POLICY'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketMultipartUploads"],
+      "Resource": ["arn:aws:s3:::loki-test"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+                 "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
+      "Resource": ["arn:aws:s3:::loki-test/*"]
+    }
+  ]
+}
+POLICY
+
+mc admin policy create minio loki-rw /tmp/loki-rw.json
+
+read -rsp 'loki-svc 密码（16 位以上）: ' PW; echo
+mc admin user add minio loki-svc "$PW"
+unset PW
+
+mc admin policy attach minio loki-rw --user loki-svc
+mc admin user svcacct add minio loki-svc    # 打印 AK/SK，下一步要用
+#+end_src
+
+验证这套权限够用、而且确实被限制住了。把上一步输出的 AK/SK 填进第一行：
+
+#+begin_src sh
+read -rsp 'AK: ' AK; echo
+read -rsp 'SK: ' SK; echo
+mc alias set lokisvc http://10.0.0.101:9000 "$AK" "$SK"
+unset AK SK
+
+mc ls lokisvc/loki-test                                     # 应成功
+head -c 1024 /dev/urandom > /tmp/perm-small
+mc cp  /tmp/perm-small lokisvc/loki-test/_permtest/small     # 应成功
+mc cat lokisvc/loki-test/_permtest/small > /dev/null         # 应成功
+
+dd if=/dev/zero of=/tmp/perm-big bs=1M count=160 status=none
+mc --debug cp /tmp/perm-big lokisvc/loki-test/_permtest/big 2>&1 | grep -c 'partNumber='
+
+mc admin info lokisvc                                       # 应失败：管理接口被拒
+
+mc rm --recursive --force lokisvc/loki-test/_permtest/
+rm -f /tmp/perm-small /tmp/perm-big
+#+end_src
+
+#+begin_quote
+=grep -c 'partNumber='= 那条 *必须大于 0* 。等于 0 说明文件太小没走分片上传，
+策略里 =AbortMultipartUpload= / =ListMultipartUploadParts= 两条权限其实没验到——
+把 =count=160= 加大重来。Loki 的 compactor 上传 index 时会用到分片。
+
+=mc admin info lokisvc= *必须失败* 。它要是成功了，说明策略没挂上，
+这把 key 仍是管理员权限，停下来排查。
+#+end_quote
+
+*再创建 S3 凭证 Secret* 。values 里不写任何凭证：
+=loki.storage.s3= 不设 =accessKeyId= / =secretAccessKey= 时，
+Loki 走 AWS SDK 默认凭证链，读下面这几个环境变量。
+
+#+begin_src sh
+read -rsp 'AK: ' AK; echo
+read -rsp 'SK: ' SK; echo
+kubectl -n loki create secret generic loki-s3-credentials \
+  --from-literal=AWS_ACCESS_KEY_ID="$AK" \
+  --from-literal=AWS_SECRET_ACCESS_KEY="$SK" \
+  --from-literal=AWS_EC2_METADATA_DISABLED=true
+unset AK SK
+#+end_src
+
+#+begin_quote
+=AWS_EC2_METADATA_DISABLED= 不是可选项。没有它时，凭证缺失会让 SDK 一路探到
+EC2 元数据服务 =169.254.169.254= ，裸机上那地址不存在，要等超时才报一个含糊的
+=NoCredentialProviders= 。加上之后直接快速失败，一眼看出是 Secret 的问题。
+#+end_quote
+
+这个 Secret 由 =defaults.extraEnvFrom= 注入给 9 个 Loki 组件
+（gateway、read-gateway、canary、两个 memcached 不需要，也确实拿不到）。
+
+再部署 Loki：
+
+#+begin_src sh
+helm upgrade --install loki ./loki/loki-18.13.5.tgz \
+  --namespace loki --create-namespace \
+  --values loki/values-distributed.yaml \
+  --wait --timeout 15m
+
+kubectl get pods -n loki
+kubectl get svc -n loki | grep gateway
+#   loki-gateway       ClusterIP     <none>       <- 集群内写入
+#   loki-read-gateway  LoadBalancer  10.0.0.12    <- 集群外查询（只读）
+#+end_src
+
+验证 ring：
+
+#+begin_src sh
+kubectl port-forward -n loki svc/loki-distributor 3100:3100 &
+curl -s localhost:3100/ring | grep -c ACTIVE     # 应为 3
+#+end_src
+
+*** 步骤 4 — Alloy（日志采集）
+*先创建采集配置 ConfigMap*（chart 的 =configMap.create= 已设为 false，
+配置由外部维护，不在 values 里）：
+
+#+begin_src sh
+kubectl create namespace alloy --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create configmap alloy-config -n alloy \
+  --from-file=config.alloy=alloy/config.alloy \
+  --dry-run=client -o yaml | kubectl apply -f -
+#+end_src
+
+再部署：
+
+#+begin_src sh
+helm upgrade --install alloy ./alloy/alloy-1.13.0.tgz \
+  --namespace alloy --create-namespace \
+  --values alloy/values-alloy.yaml \
+  --wait --timeout 10m
+
+kubectl get pods -n alloy -o wide    # 5 个节点各一个，均 2/2 Running
+#+end_src
+
+采集两类日志：
+
+- *Pod 容器日志* =/var/log/pods= → 标签 namespace / pod / container / node / job
+- *宿主机 systemd journal* =/var/log/journal= → 标签 unit / node / level， =job=systemd-journal=
+  （kubelet、containerd、sshd、内核等。Ubuntu 26.04 未启用 rsyslog，系统日志只在 journald）
+- *公共静态标签* 两条路径都经过 =loki.process \"common\"= ，统一打上
+  =project=jp=、=environment=test= 。以后新增采集源只要 forward 到它即可。
+
+*** 步骤 4b — Alloy Events（Kubernetes 事件）
+事件（OOMKilled、FailedScheduling、镜像拉取失败、Unhealthy）*不在容器日志里*，
+而 apiserver 没设 =--event-ttl=，用的是默认值：*事件在 etcd 里只保留 1 小时*，
+过期就永久查不到。收进 Loki 才能事后追溯。
+
+*这是独立的第二个 Alloy release，不是加进上面那个 DaemonSet。*
+原因：Events 是集群级资源，DaemonSet 的 5 个副本会各采一份，
+同一个事件会在 Loki 里变成 5 条。单副本 Deployment 从根上没有这个问题。
+
+#+begin_src sh
+kubectl create configmap alloy-events-config -n alloy \
+  --from-file=config.alloy=alloy/config-events.alloy \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+helm upgrade --install alloy-events ./alloy/alloy-1.13.0.tgz \
+  --namespace alloy \
+  --values alloy/values-alloy-events.yaml \
+  --wait --timeout 10m
+
+kubectl get pods -n alloy -o wide    # DaemonSet 5 个 + events 1 个 = 6 个，均 2/2
+#+end_src
+
+跑在 master 上（values 里带 control-plane 容忍 + nodeSelector）：三个 master 的内存
+请求只占 9~12%，而两个 worker 已到 43% / 65%。它只跟 API Server 打交道，
+不读宿主机文件，所以既不挂 =/var/log= 也不需要 =runAsUser: 0= 。
+
+chart 会按 release 名生成 =alloy-events= 这一套 SA/ClusterRole/Binding，
+与现有 =alloy= 的那套互不干扰；events 的 =get/list/watch= 权限 chart 默认就包含，
+*不需要额外配 RBAC*。
+
+*** 步骤 5 — Grafana 数据源
+| 字段         | 值                                    |
+|--------------+---------------------------------------|
+| Type         | Loki                                  |
+| URL          | =http://10.0.0.12=                    |
+| HTTP Headers | =Header=X-Scope-OrgID= =Value=jasper= |
+
+*header 必须配，且值要和 Alloy 的 =tenant_id= 完全一致*：不带头返回 401 =no org id=；
+租户不匹配则返回成功但结果为空。
+
+*** 步骤 6 — Grafana 看板
+#+begin_src sh
+python3 grafana/make-dashboard.py           # 日志总览（运维视角）
+python3 grafana/make-dev-dashboard.py       # 研发排障（研发视角）
+python3 grafana/make-gateway-dashboard.py   # Gateway JSON 访问日志
+python3 grafana/make-events-dashboard.py    # Kubernetes 事件
+#+end_src
+
+脚本会把 JSON 写进 =grafana/= 并直接 POST 到 Grafana 的 =/api/dashboards/db= ，
+不需要手动导入。改看板要改脚本再重跑，别在 Grafana UI 里改——UI 改动会被下次
+生成覆盖。
+
+| 看板              | 地址                       | 面向                                             | 默认窗口 |
+|-------------------+----------------------------+--------------------------------------------------+----------|
+| 日志总览          | =/d/loki-log-overview=     | 运维：全局速率、节点分布、容量趋势               | 1h       |
+| 研发排障          | =/d/loki-dev-troubleshoot= | 研发：定位自己服务的问题                         | 30m      |
+| Gateway 访问日志  | =/d/loki-gateway-access=   | nginx-gateway-fabric 的 JSON 访问日志            | 1h       |
+| *Kubernetes 事件* | =/d/loki-k8s-events=       | 集群事件：OOM / 调度失败 / 拉镜像失败 / 探针失败 | 30m      |
+
+*** 级别（所有看板统一）
+四个看板顶部都有「级别」下拉。 *它筛的是 =detected_level= ，不是索引标签 =level= 。*
+
+|        | =level=                                       | =detected_level=                          |
+|--------+-----------------------------------------------+-------------------------------------------|
+| 类型   | 索引标签，可写进 ={}= 里选流                  | 结构化元数据，只能作为管道阶段过滤        |
+| 谁打   | Alloy，仅 journal / k8s 事件 / 网关访问日志   | Loki 服务端， =discover_log_levels: true= |
+| 覆盖率 | 实测 4276/89069 ≈ *4.8%*                      | *100%* ，含 =unknown= 一档                |
+
+拿索引标签 =level= 做看板筛选是个陷阱：绝大多数 Pod 日志根本没有这个标签，
+一筛就有 95% 的日志凭空消失，而界面上毫无提示。详见坑位 47。
+
+=detected_level= 还顺带修掉了一处不一致：索引标签里 journal 打的是 =warning= 、
+k8s 事件打的是 =warn= ，两种拼法并存； =detected_level= 统一归一成 =warn= 。
+
+#+begin_quote
+=detected_level= 是结构化元数据，所以 =label_values(detected_level)= *返回空* 。
+变量只能是 custom 类型的固定列表（trace / debug / info / notice / warn /
+error / critical / fatal / unknown），也因此 *不参与级联收窄* 。
+
+行为验证（各档之和应约等于不过滤的总量，差值来自滑动窗口）：
+
+| 级别         | 15 分钟条数 |
+|--------------+-------------|
+| 不过滤 =.+=  |       23733 |
+| error        |         579 |
+| info         |       12569 |
+| unknown      |       10113 |
+| fatal        |           0 |
+| 六档之和     |       23730 |
+#+end_quote
+
+*例外：日志总览的「上报节点数 (1h)」面板不受级别过滤影响。* 它是存活判断面板、
+带阈值着色，叠加级别过滤会在选 =error= 时数出更少的节点、误报红色——
+正是它注释里已经防过一次的那个坑。Kubernetes 事件看板的「常见故障速查」
+四个面板同理，本来就不受顶部过滤影响。
+
+*** 项目 / 环境（所有看板统一）
+*四个看板的级联链首都是「项目 → 环境」*，为多项目多环境做准备：
+
+#+begin_example
+日志总览:          项目 -> 环境 -> 命名空间 -> 节点 -> job
+研发排障:          项目 -> 环境 -> 日志来源 -> 命名空间 -> 服务
+Gateway 访问日志:  项目 -> 环境 -> 网关 -> Host -> 状态码
+Kubernetes 事件:   项目 -> 环境 -> 命名空间 -> 级别 -> 原因/对象类型
+#+end_example
+
+=project= 不受任何上游过滤（链首）， =environment= 只按 =project= 收窄
+（ =stream: {project=~"$project"}= ）。 *全部 51 个面板的查询都带了这两个过滤* ，
+不是只在变量上摆个样子——这点有脚本逐面板校验。
+
+目前各只有一个取值 （ =project=jp= / =environment=test= ），所以看起来没区别。
+但链路铺好之后， *接入第二个项目或环境时看板完全不用改* ：
+
+| 要做的       | 怎么做                                                                       |
+|--------------+------------------------------------------------------------------------------|
+| 新增项目/环境 | 改 Alloy 的 =stage.static_labels=，给那批日志打上新的 =project= / =environment= |
+| 看板         | *不用动* 。变量是 =label_values= 查询，新取值会自动出现在下拉里                    |
+| 告警         | 按需在规则的选择器里加 =project== / =environment== 限定                         |
+
+#+begin_quote
+两个变量的 =allValue= 都是 =.+= （不是 =.*= ，原因见坑位 35）。
+这要求日志必须带这两个标签——本栈的三条采集路径
+（Pod 日志 / journal / k8s 事件）都在 =loki.process= 里统一打了静态标签，
+所以 All 状态下不会漏数据。新增采集路径时 *务必也打上* ，否则那批日志
+会在所有看板里消失。
+#+end_quote
+
+*** 级联筛选
+两个看板的下拉框都是*联动*的——选了上游变量，下游候选值自动收窄。
+实现方式是给变量查询加 =stream= 流选择器，只引用排在它前面的变量：
+
+#+begin_example
+研发排障:  日志来源 -> 命名空间 -> 服务 -> 项目
+日志总览:  项目 -> 环境 -> 命名空间 -> 节点 -> job
+Kubernetes 事件:  命名空间 -> 级别
+#+end_example
+
+*** Kubernetes 事件看板
+数据来自 =alloy-events= （步骤 4b）。事件回答的是 *容器日志回答不了* 的问题——
+Pod 根本没起来的时候没有容器日志，只有事件。
+
+*默认时间窗 30m，和别的看板一致（2026-10-03 从 24h 改回来）。*
+
+这里有个取舍，而且 *不能按本测试环境来定* 。本环境事件极稀疏——实测 24 小时才
+三百条，空闲时段直接为 0——按这个来看，24h 才是合适的默认值。
+但这套栈最终要用在真实集群：生产环境的事件量大几个数量级，
+*默认就扫 24h 会让每次打开都拉一大批数据，把 Loki 压垮* 。
+
+所以默认取 30m。本环境下打开经常是空的，*那是预期不是故障* ，往上调范围即可。
+速率窗口也相应下调到默认 5m（档位 1m/5m/15m/1h/6h）——
+速率窗口比整个时间范围还大的话，趋势图就只剩一两个点。
+
+#+begin_quote
+为此给几个 stat 面板设了 =noValue: "0"= ：空结果显示 *0* 而不是 Grafana 默认的
+=No data= 。这两者语义完全不同——「这段时间没有 Warning」是好事，
+「采集断了」是故障，而 =No data= 把两者混成一个样子。
+apiserver 没设 =--event-ttl= ，事件在 etcd 里只留 1 小时；Loki 里的保留由
+=retention_stream= 管（ =source=kubernetes-events= 为 168h），拉长范围能查到。
+#+end_quote
+
+*** 信息层级：排障优先（2026-10-03 重构）
+按「假设读者是半夜被叫醒的人」来排——参考 Grafana 官方最佳实践引用的 KubeCon
+talk《Fool-Proof Kubernetes Dashboards for Sleep-Deprived Oncalls》。
+*默认可见高度从 78 格压到 23 格* ，第一屏就能看完。
+
+| 位置       | 面板                                                      |
+|------------+-----------------------------------------------------------|
+| 第一屏     | Warning 事件数 / 受影响对象 / 最频繁故障原因 / 事件趋势     |
+| 第一屏     | *Warning 事件汇总* （表格）                                |
+| 第一屏     | Warning 事件流（原文）                                     |
+| 折叠行     | 全部事件（含 Normal）                                      |
+| 折叠行     | 维度分析：涉及对象数 / 涉及对象列表 / 按原因速率 / 按命名空间速率 |
+| 折叠行     | 说明 / 怎么读这个看板                                      |
+
+*第一屏全部是 Warning，且硬编码 =level="warn"= ，不受顶部「级别」下拉影响。*
+否则选了 info 整个排障区会全空。级别下拉对「全部事件」和「维度分析」生效。
+「事件趋势」同样不受它影响——那个面板本身就是按 level 分组展示 Normal/Warning
+的构成，再被收窄就只剩一种颜色。
+
+*** Warning 事件汇总（取代了原先四个写死 reason 的面板）
+原先的「常见故障速查」是四个面板，分别写死 =ErrImagePull= / =OOMKilled= /
+=FailedScheduling= / =Unhealthy= 。问题是 *漏网* —— =BackOff= 、=FailedMount= 、
+=NodeNotReady= 这些都不在列，出了就看不见。
+
+现在换成一张按 =reason= + =kind= + =namespace= 聚合的表，
+*新故障类型自动进来，不用改脚本* 。实测当前内容：
+
+| 原因             | 类型 | 命名空间    | 次数 |
+|------------------+------+-------------+------|
+| Unhealthy        | Pod  | loki        |   37 |
+| Unhealthy        | Pod  | kube-system |   14 |
+| FailedScheduling | Pod  | loki        |    9 |
+| Unhealthy        | Pod  | default     |    1 |
+
+*刻意不带对象名* ：带上会让一次探针抖动炸成几十行。具体是哪个对象，
+到下面的「Warning 事件流」看原文。
+
+*** 窗口语义
+「Warning 事件数」「受影响对象」「最频繁故障原因」「Warning 事件汇总」
+「涉及对象数」「涉及对象列表」用的都是 *=$__range=（仪表盘时间范围）* ，
+不是「速率窗口」。
+
+早先它们用速率窗口（默认 1h），于是 24h 视图下只统计最近一小时，
+大部分时候是 0，看起来就像面板坏了。研发排障看板的
+「涉及服务数 / 涉及服务列表」同理，已一并改掉。
+
+#+begin_quote
+「事件趋势」是例外，它用 *速率窗口* 分桶——那是它的 X 轴粒度，不是统计范围。
+另外对象数超过 30 时列表会少于计数（topk 封顶），这是预期行为不是故障。
+#+end_quote
+
+=reason= 和 =kind= 是 logfmt 解析出的 *字段不是索引标签* ，所以顶部用文本框填正则
+而不是下拉框。这是刻意的： =reason= 有几十种取值，做成标签会把 stream 数抬高一个
+量级，而这套栈真正的风险是标签基数不是数据量。想按报告者过滤也一样走解析器：
+
+#+begin_src logql
+{source="kubernetes-events"} | logfmt | reportingcontroller="kubelet"
+#+end_src
+
+实测效果：
+
+| 已选条件                    | 「服务」下拉框候选                                 |
+|----------------------------+--------------------------------------------------|
+| （不过滤）                  | 19 个，应用和系统服务混在一起                       |
+| 日志来源 = =systemd=        | *7 个* ：containerd、kubelet、grafana-server...   |
+| 日志来源 = =pod=            | *10 个* ：loki、alloy、order-service...           |
+| =pod= + 命名空间 =demo-app= | *3 个* ：order-service、user-service、web-gateway |
+
+变量 JSON 的写法（Grafana Loki 数据源）：
+
+#+begin_src json
+{"label": "app", "refId": "app", "type": 1,
+ "stream": "{source=~\"$source\", namespace=~\"$namespace\"}"}
+#+end_src
+
+=type: 1= 是 LABEL_VALUES；=stream= 就是过滤用的流选择器。
+*变量在 =templating.list= 里的顺序不能乱*——引用了排在后面的变量会拿不到值。
+
+--------------
+
+** 标签体系
+所有日志共有的标签：
+
+| 标签                       | 取值                                    | 说明                                            |
+|----------------------------+-----------------------------------------+-------------------------------------------------|
+| =project= / =environment=  | =jp= / =test=                           | 静态标签，由 =stage.static_labels= 统一打上       |
+| *=source=*                 | =pod= / =systemd= / =kubernetes-events= | *日志来源分类* ：应用容器 / 宿主机系统服务 / 集群事件 |
+| *=app=*                    | 服务名                                  | *研发最常用的过滤维度* ，见下                      |
+| =node=                     | 节点主机名                               |                                                 |
+| =level= / =detected_level= | info/warn/error/...                     |                                                 |
+
+=source=pod= （容器日志）额外有： =namespace= 、 =pod= 、 =container= 、 =job= 、 =filename= 、 =stream=
+=source=systemd= （系统日志）额外有： =unit= 、 =syslog_identifier=
+=source=kubernetes-events= （集群事件）： =namespace= 、 =node= 、 =level= 、 =app=kubernetes-events= ，
+=job=kubernetes-events=
+
+*** app 标签怎么来的
+- *容器日志* ：取 Pod 的 =app= 或 =app.kubernetes.io/name= 标签
+  （ =app.kubernetes.io/name= 优先）。pod 名带 ReplicaSet 哈希、每次发版都变，
+  不适合给人用，所以必须另给一个稳定的服务标识。
+- *系统日志* ：取 systemd unit 名去掉 =.service= 后缀。
+  所以 =kubelet.service= → =app=kubelet=，=containerd.service= → =app=containerd=。
+
+这样*一个「服务」下拉框就覆盖了应用和系统服务*，不用分两个看板。
+
+*** 系统日志为什么有 namespace
+=source=systemd= 的日志被打上 =namespace=_system= 。这是刻意的占位：
+Grafana 看板普遍用 =namespace=~"$namespace"= 过滤，而 LogQL 的 ==~".+"=
+*要求标签存在且非空* 。不给 namespace 的话，系统日志会在所有按命名空间
+筛选的面板里凭空消失——这正是「在 Grafana 里找不到 kubelet 日志」的原因。
+
+*** 日志级别从哪来（两套机制，别混淆）
+面板里看到的 ERROR/INFO/UNK， *大部分不是 Alloy 打的* ——在 Alloy 配置里搜 =level=
+只能找到 journal 那一处，这经常让人以为配置漏了。实际有两套并存的机制：
+
+|         | =level=                                | =detected_level=                                    |
+|---------+----------------------------------------+-----------------------------------------------------|
+| 类型    | *索引标签* ，可用于流选择 {level="error"} | *结构化元数据* ，只能   \vert{} detected_level 过滤    |
+| 谁产生  | *Alloy 显式打的*                        | *Loki 服务端* ， =discover_log_levels: true= 自动推断 |
+| 覆盖范围 | journal、k8s 事件、JSON access log      | 所有日志                                             |
+
+实测 1 小时窗口：
+
+#+begin_example
+level 索引标签:   pod              → 绝大部分没有这个标签
+                 systemd          → {info, notice, debug, error}   来自 journal priority
+                 kubernetes-events→ {info, warn}                   由事件的 type 映射
+#+end_example
+
+=detected_level= 靠日志行里有没有级别关键字（ =level= 、 =[info]= 、 =INFO= 等）来推断。
+Java 日志、logfmt、nginx error log 都能推出来； *access log 推不出来* ——它记录的是
+「一次请求」不是「一个事件」，本来就没有级别概念，所以显示 =unknown=（面板里的 UNK）。
+
+一个容器里可能同时有好几种，=gateway-public-nginx= 就是典型：
+
+| stream | 内容                                 | detected_level |
+|--------+--------------------------------------+----------------|
+| stdout | *JSON access log*                    | *unknown*      |
+| stdout | nginx-agent（...\twarn\tgrpc@...）   | warn           |
+| stderr | nginx error log（[info] 27#27: ...） | info           |
+| stderr | nginx-agent（level=INFO msg=...）    | info           |
+
+*access log 的级别由 HTTP 状态码映射而来* （在 =config.alloy= 的 =loki.process "cri"= 里）：
+
+| 状态码 | level   |
+|--------+---------|
+| 5xx    | =error= |
+| 4xx    | =warn=  |
+| 其余   | =info=  |
+
+实测 =200→info= 、 =404→warn= 、 =502→error= 。这样就能直接用索引标签选流，
+比 =\| json \| status >= 500= 快：
+
+#+begin_src logql
+{app="gateway-public-nginx", level="error"}
+#+end_src
+
+#+begin_quote
+*注意 =level= 在 pod 日志里并不齐全* ——只有 JSON access log 有，Java 日志、
+Loki 组件日志等都没有。所以 *不要* 用 {source="pod", level=~".+"} 去筛 pod 日志，
+那样会把绝大部分日志排除掉。按级别筛 pod 日志请用 =detected_level= 。
+#+end_quote
+
+*** 集群事件的两个兜底
+事件行是 logfmt，形如
+~name=<对象> kind=Pod reason=Scheduled type=Normal sourcehost=<节点> msg="..."~ 。
+处理时做了两处 *空值兜底* ，理由和上面「系统日志为什么有 namespace」完全一样——
+标签缺失会让这些记录在按该维度筛选的面板里凭空消失：
+
+| 标签        | 来源                                             | 空值时     | 实测           |
+|-------------+--------------------------------------------------+------------+----------------|
+| =level=     | 事件的 =type=：=Normal=→=info=，=Warning=→=warn= | 不会为空   | 两种值都出现过 |
+| =node=      | 事件的 =sourcehost=（kubelet 报的事件才有）      | =_cluster= | *兜底会触发*   |
+| =namespace= | 组件自带（涉及对象的命名空间）                   | =_cluster= | 兜底*未*触发过 |
+
+=namespace= 那条兜底目前是纯防御：实测这套集群产生的事件都带命名空间，
+连 Node 相关的事件也落在 =default=，所以 =namespace=_cluster= 一次都没出现过。
+规则留着以防某类集群级事件真的不带命名空间——真出现时它会被正常筛选到，
+而不是凭空消失。
+
+=node=_cluster= 表示这条事件不是某个节点报的，而是 scheduler / 各种 controller
+报的集群级事件——实测 =Scheduled= 事件就是这一类。
+
+*=_cluster= 会出现在按节点聚合的结果里* ，看板的「节点」下拉会多这么一项。
+凡是拿 =count by (node)= 数节点的查询都要把事件排除掉，否则会数出 6 个节点：
+
+#+begin_src logql
+count(count by (node) (count_over_time({node=~".+", source!="kubernetes-events"}[1h])))
+#+end_src
+
+告警规则 =NodeLogShippingStalled= *不受影响*——它的选择器带 =job="loki/canary"=，
+而事件的 job 是 =kubernetes-events=，天然被排除在外。
+
+=app= 固定为 =kubernetes-events=，*没有取 =reportingcontroller=*：后者有十几种取值，
+乘上 namespace 会把 stream 数抬高一个量级，而这套栈真正的风险是标签基数不是数据量。
+想按报告者过滤用解析器，不增加基数：
+
+#+begin_src logql
+{source="kubernetes-events"} | logfmt | reportingcontroller="kubelet"
+#+end_src
+
+*** 常用查询
+#+begin_src logql
+{app="kubelet"}                          # kubelet 日志（全部节点）
+{app="kubelet", node="node01.jasper.org"} # 指定节点
+{source="systemd"}                       # 全部宿主机系统日志
+{source="pod", namespace="demo-app"}     # 某命名空间的应用日志
+{app="order-service"} |~ `(?i)error`     # 某服务的错误
+{unit="containerd.service"}              # 按 unit 精确过滤
+{source="kubernetes-events"}             # 全部集群事件
+{source="kubernetes-events", level="warn"}          # 只看 Warning 事件
+{source="kubernetes-events"} |= `reason=Failed`     # 拉取失败 / 启动失败
+{source="kubernetes-events"} |= `reason=OOMKilled`  # 被 OOM 杀掉的容器
+#+end_src
+
+--------------
+
+** Gateway 访问日志（JSON）
+nginx-gateway-fabric 的数据面访问日志已配置为 JSON 格式，
+看板： =/d/loki-gateway-access=
+
+*** 怎么配的
+NGF 的 =NginxProxy= CRD 原生支持自定义 access log， *不需要用 SnippetsFilter 绕* 。
+配置写在 helm values 的 =nginx.config=，chart 会把它原样渲染进 NginxProxy 的 spec
+（=templates/nginxproxy.yaml=: =toYaml .Values.nginx.config=）。
+
+values 文件在 =/root/gatewayapi/ngfdir/values-ngf.yaml=：
+
+#+begin_src yaml
+nginx:
+  config:
+    logging:
+      accessLog:
+        escape: json
+        format: >-
+          {"time":"$time_iso8601","remote_addr":"$remote_addr",...}
+#+end_src
+
+升级：
+
+#+begin_src sh
+helm upgrade ngf /root/gatewayapi/ngfdir/nginx-gateway-fabric \
+  -n nginx-gateway --values /root/gatewayapi/ngfdir/values-ngf.yaml
+#+end_src
+
+#+begin_quote
+原来是用 =--set= 装的，已改成 values 文件（原有的
+=nginx.service.type=、=externalTrafficPolicy=、=snippetsFilters.enable= 都保留了）。
+#+end_quote
+
+*** 格式串的三条硬性约束
+来自 NginxProxy CRD 的 schema，违反会被 API 拒绝或产生非法 JSON：
+
+1. *不能有单引号* —— 格式串会被渲染进单引号包裹的 =log_format= 指令
+2. *不能有换行* —— 必须写成一行（YAML 里用 =>-= 折叠）
+3. *=escape: json= 必须开* —— 否则 User-Agent 里带个引号就把整行 JSON 破坏掉
+
+实测：请求带 =User-Agent: Bad"UA\with/quotes= ，开了 escape 后正确转义为
+="user_agent":"Bad\"UA\\with/quotes"= ，整行仍是合法 JSON。
+
+*** 字段类型的取舍
+#+begin_example
+"status":$status              <- 不加引号，JSON 里是数字
+"request_time":$request_time  <- 不加引号，JSON 里是浮点数
+"upstream_status":"$upstream_status"  <- 必须加引号
+#+end_example
+
+=$status= / =$body_bytes_sent= / =$request_length= / =$request_time= nginx 保证非空，
+不加引号让它们成为 JSON 数字，这样 LogQL 里可以直接
+~| status >= 400~ 、 ~| request_time > 1~ 、 ~| unwrap request_time~ 做数值运算。
+
+upstream 系列变量在请求没走到上游时是 *空值* ，不加引号会产生
+="upstream_status":,= 这种非法 JSON，必须加引号。
+
+*** 查询时的两个坑
+*坑一：同一个容器里混着两种日志。* nginx-agent 输出 logfmt，access log 输出 JSON，
+都在 =container=nginx= 的 stdout 里。直接 =| json= 会在 agent 日志上产生
+=JSONParserErr= （实测 100 行里 10 个 stream 报错）。必须先用 =|~ = + 反引号 + =^\{= + 反引号 过滤。
+
+*坑二：init 容器也输出 JSON。* ={"level":"info",...,"msg":"Starting init container"}=
+同样能通过 =^\{= ，但没有 status 字段，会在 =sum by (status)= 里多出一个空分组。
+
+所以完整的基础选择器是：
+
+#+begin_src logql
+{app="gateway-public-nginx", container="nginx"} |~ `^\{` | json | status != ""
+#+end_src
+
+~container="nginx"~ 排除 init 容器， ~status != ""~ 双保险。
+
+*** 常用查询
+#+begin_src logql
+# 基础（下面都以 $B 代指上面那段基础选择器）
+{app="gateway-public-nginx", container="nginx"} |~ `^\{` | json | status != ""
+
+# 4xx/5xx（数值比较）
+... | status >= 400
+
+# 按档筛状态码（正则，看板的「状态码」下拉用的就是这个写法）
+... | status =~ "4.."          # 只看 4xx
+... | status =~ "[45].."       # 4xx + 5xx
+
+# ---- 安全视角：host 保留真实值，异常访问直接可见 ----
+# 都有哪些 Host 在访问（含扫描器伪造的）
+topk(20, sum by (host) (count_over_time({app=~".+-nginx", container="nginx", host=~".+"}[1h])))
+
+# 盯住某个可疑 Host 的全部请求（host 是索引标签，走流选择器很快）
+{app="gateway-public-nginx", host="admin.phpmyadmin.evil"}
+
+# 哪些 Host 清一色是 404（典型的扫描特征：试域名、试路径）
+sum by (host) (count_over_time({app=~".+-nginx", container="nginx", host=~".+"} |~ `^\{` | json | status = "404" [1h]))
+
+# 扫描器常探的路径
+topk(20, sum by (uri) (count_over_time({app=~".+-nginx", container="nginx"} |~ `^\{` | json | status = "404" [1h])))
+
+# 慢请求
+... | request_time > 1
+
+# 按状态码统计
+sum by (status) (count_over_time(... [5m]))
+
+# P95 响应时间（按 Host）
+quantile_over_time(0.95, ... | unwrap request_time [5m]) by (host)
+
+# 某个请求的全链路（JSON 里有 request_id）
+... | request_id = "548b4534b055521b7901af473b964917"
+#+end_src
+
+*** 看板面板（2026-10-03 重构：业务总览优先）
+生产环境里 gateway 是 *所有业务域名的统一入口* ，所以这个看板同时服务两个目的：
+排障，和「了解业务产品使用情况」。第一屏按 *RED*（Rate / Errors / Duration）
+打底再叠业务量。总高 60 格 → 第一屏 20 格。
+
+| 位置   | 面板                                                      |
+|--------+-----------------------------------------------------------|
+| 第一屏 | QPS / 错误率 / P95 / 传输流量 / 独立客户端                 |
+| 第一屏 | 请求趋势（按状态码堆叠） + 按域名请求数                    |
+| 第一屏 | *接口使用情况表* ——域名 / 方法 / 接口 / 请求数 / 错误率 / P95 |
+| 折叠行 | 错误与慢请求：网关 vs 后端耗时 / 错误率趋势 / 4xx·5xx 原文 / 慢请求原文 |
+| 折叠行 | 流量来源与客户端：Top Referer / Top UA / Top 完整 URI      |
+| 折叠行 | 原始日志（ =prettifyLogMessage= 开着，JSON 格式化展示）    |
+| 折叠行 | 说明 / 怎么读这个看板                                      |
+
+**** 接口使用情况表是核心
+业界（Apitally / Cloudflare / Apigee）都收敛到同一个构件： *一张按接口排名的表，
+同时带请求数、错误率、P95* 。它一张表回答两个问题——哪个接口最常用（业务）、
+哪个接口有问题（排障）。
+
+技术上它是 *三条查询按 =host+method+path= 合并* 成一张表（请求数 / 错误率 / P95
+各一条），靠 =labelsToFields + merge= 对齐。变换链和单查询表格一样不能乱序，
+值列名带 refId 后缀（ =Value #A= / =#B= / =#C= ）。
+
+错误率列设了 =noValue: "0"= ：没有 4xx/5xx 的接口在那条查询里 *根本没有序列* ，
+不设的话那一格是空白，看着像缺数据。
+
+**** 接口列剥掉了查询串
+=uri= 带查询串，不处理的话生产环境每个 =?id=123= 都会在表里单独占一行。
+用 LogQL 的 =label_format= 配 sprig 的 =regexReplaceAll= 归一化成 =path= ：
+
+#+begin_src logql
+| label_format path=`{{ regexReplaceAll "\\?.*$" .uri "" }}`
+#+end_src
+
+实测本环境 =/login= 原样 308 行次，归一化后 378（ =?echo_code= 的变体合并进来）。
+原始 =uri= 仍保留——「流量来源与客户端」里有带查询串的完整 URI 排行，
+想看「哪些参数组合用得多」看那张。
+
+**** 网关开销 vs 后端耗时：排障第一个该看的
+同一个面板里画 =request_time= 和 =upstream_response_time= 两条 P95 线。
+*两条线差得远说明慢在网关自己* （连接池、TLS 握手、限流排队），
+*贴在一起说明慢在后端* 。
+
+=upstream_response_time= 在请求没走到上游时是空串，所以必须先
+=| upstream_response_time != ""= 再 =unwrap= ，否则 unwrap 报错。
+
+**** 错误率阈值按生产标准定，本环境会一直红
+*1% 转橙、5% 转红* ——这是生产环境的合理标准。
+本测试环境的 demo 应用 *故意* 返回约 13.6% 的错误（404/500/503），
+所以这里长期显示红色， *那是预期不是故障* 。
+
+#+begin_quote
+这和事件看板、研发看板「按实测基线定阈值」的做法 *相反* ，是刻意的：
+那两个的基线是真实的，这个的基线是人造的。按 13.6% 去定阈值，
+到了生产就完全失去告警意义。
+#+end_quote
+
+*** 日志时间是东八区
+四个 nginx（ =gateway-public-nginx= / =loki-gateway= / =loki-read-gateway= /
+=web-gateway= ）都已改成东八区，日志里的时间标注统一是 =+0800=：
+
+#+begin_example
+{"time":"2026-09-30T10:43:21+08:00", ...}                         # NGF 数据面 JSON
+10.0.0.101 - [30/Sep/2026:10:50:02 +0800] 200 "GET /loki/..."     # 只读网关
+#+end_example
+
+做法见坑位 38（不是设 =TZ= 环境变量就行的，Alpine 镜像里没有 tzdata）。
+
+#+begin_quote
+*Loki 的条目时间戳不受影响也不需要改。* 它来自 CRI 日志行开头的时间戳
+（kubelet 写的 UTC RFC3339Nano），Grafana 按浏览器时区显示，本来就是北京时间。
+这次改的是*日志正文里*那个时间——展开日志详情时看到的那个。
+实测两者吻合到秒（=Loki 时间戳 -> 本地 10:44:03= vs =JSON time 10:44:03+08:00=）。
+#+end_quote
+
+*** 顶部过滤器
+| 变量     | 类型     | 说明                                           |
+|----------+----------+------------------------------------------------|
+| 网关     | 下拉     | 候选限定在 =app=~".+-nginx"= ，见下            |
+| Host     | 下拉     | 取自 =host= 索引标签，保留 *真实* Host 头，见下 |
+| *状态码* | 下拉     | 正则，填进   \vert{} status =~ "..." ，见下      |
+| 关键字   | 文本框   | 在日志正文里搜索，留空不过滤                   |
+| 级别     | 下拉     | 按 =detected_level= 过滤，见「级别（所有看板统一）」 |
+| 速率窗口 | interval | 影响所有 =rate()= / =count_over_time()=        |
+
+#+begin_quote
+本看板的「级别」和「状态码」语义高度重叠——访问日志的 =detected_level=
+本来就主要由 HTTP 状态码决定（5xx→error / 4xx→warn / 其余→info）。
+两个一起用是求交集，不是互相冲突，但按状态码筛通常更精确。
+#+end_quote
+
+*状态码下拉* 有六个选项，值是直接填进 LogQL 的正则：
+
+| 选项               | 值       |
+|--------------------+----------|
+| 全部               | =.+=     |
+| 2xx 成功           | =2..=    |
+| 3xx 重定向         | =3..=    |
+| 4xx 客户端错误     | =4..=    |
+| 5xx 服务端错误     | =5..=    |
+| 4xx + 5xx 全部错误 | =[45]..= |
+
+两个设计选择：
+
+- *用正则而不是数值比较。*  正则一条表达式就能覆盖「某一档」（=4..=）和
+  「若干档」（=[45]..=）；数值比较要写成 =| status >= 400 | status < 500= 两段，
+  塞不进一个变量。实测两种写法都可用——=| json= 会把 status 变成字符串 label，
+  ==~= 正常工作，同时它仍是数字，别处的 =| status >= 400= 也照样能用。
+- *做成单选而不是多选。* 多选时 Grafana 的插值格式依赖数据源和 format 修饰符，
+  而这里的值本身就是正则（=4..= 里的点是元字符），用 =${status:regex}= 会把点
+  转义成 =\.= 反而失效。单选插值无歧义，常用的组合直接给一个 =[45]..= 预设。
+
+实测六档全部正确：=2..=→只有 200、=3..=→只有 301、=4..=→只有 404、
+=5..=→500 和 503、=[45]..=→404/500/503、=.+=→全部。
+
+*Host 下拉的值来自索引标签，保留真实的 Host 头。*
+=host= 原本只是 =| json= 解析出的字段，不是标签——而 Grafana 的 Loki 变量只支持
+=label_names= / =label_values=，拿不到非标签字段，所以做不了动态下拉。
+Alloy 侧已把它提升为索引标签（见 =config.alloy= 的 =loki.process "cri"=）。
+
+*刻意不做白名单归一化。* =$host= 取自请求的 Host 头，任何人都能任意制造——
+实测发 =evil.example.com= / =scanner-test.cn= / =1.2.3.4= / =admin.phpmyadmin.evil=
+这些无关 Host，虽然 Gateway 都返回 404，=$host= 照样被记进 access log。
+曾经为了控制基数把白名单外的值归成 =_other=，但那样等于*把安全线索丢掉*：
+=evil.example.com= 和 =scanner-test.cn= 变成同一个值，看不出谁在扫、扫的什么域名。
+access log 的价值之一就是暴露异常访问，不该在采集端提前丢弃。
+
+基数风险改用*护栏 + 监控*应对：
+
+| 手段           | 位置                                 | 作用                                                                                            |
+|----------------+--------------------------------------+-------------------------------------------------------------------------------------------------|
+| 截断到 253 字符 | =config.alloy= 的 =trunc 253=        | 域名理论最大长度。防止恶意构造的超长 Host 顶破 Loki 的 =max_label_value_length= (2048) 导致整批写入被拒 |
+| 基数告警        | =GatewayHostCardinalityHigh=         | 1 小时内不同 host 数 > 30 持续 10 分钟就告警                                                       |
+| 兜底           | =max_global_streams_per_user: 10000= | Loki 侧的硬上限                                                                                  |
+
+这样异常访问直接可见，按可疑 Host 选流也很快：
+
+#+begin_src logql
+{app="gateway-public-nginx", host="admin.phpmyadmin.evil"}
+#+end_src
+
+#+begin_quote
+因为 host 是索引标签，面板在*流选择器*里过滤
+（{app=~"$gateway", container="nginx", host=~"$host"}）而不是 "| host =~"，走索引更快。
+注意 "| json"  之后 JSON 里的 host 字段会和同名 stream label 冲突，
+Loki 把解析出来的那个重命名为 =host_extracted= 。
+#+end_quote
+
+*没有命名空间下拉。* 实测每个网关 app 只存在于一个命名空间
+（ =gateway-public-nginx= → =default= 、 =loki-read-gateway= → =loki= 、
+=web-gateway= → =demo-app= ），app 已经唯一确定了命名空间，再给一个
+namespace 变量纯属冗余——而且是个陷阱，见坑位 37。
+
+*「网关」的候选限定在 =app=~".+-nginx"= 。* NGF 为每个 Gateway 生成一个
+=<gateway-name>-nginx= 的数据面 Deployment，这个正则正好圈住它们。
+不限定的话 {source="pod", container="nginx"} 会把 =loki= 、 =loki-read-gateway= 、
+=web-gateway= 也列进下拉，而它们是 *自建 nginx，access log 是普通 combined 格式
+不是 JSON* ——本看板的基础选择器带 =|~ ^\{ | json= ，选中它们会 13 个面板全空。
+实测这几个的 JSON 日志流数都是 0，只有 =gateway-public-nginx= 有。
+
+--------------
+
+** 研发排障看板
+给研发快速定位自己服务问题用。 *2026-10-03 重构* ，默认可见高度从 62 格压到 27 格。
+
+顶部过滤器：
+*项目 → 环境 → 范围 → 日志来源 → 命名空间 → 服务 → 关键字 → 级别 → 速率窗口*。
+
+| 位置       | 面板                                                      |
+|------------+-----------------------------------------------------------|
+| 第一屏     | 日志速率 / 错误数 / *错误占比* / 涉及服务数               |
+| 第一屏     | *日志量直方图（按级别堆叠）*                              |
+| 第一屏     | *实时日志流* ——主角，18 格高                              |
+| 折叠行     | 错误专区：错误日志流 / 错误速率（按服务）/ Java 异常 Top 10 |
+| 折叠行     | 服务与级别分布：涉及服务列表 / 级别饼图                    |
+| 折叠行     | Nginx 访问日志分析：状态码 / 5xx 原文 / 访问量 Top / 错误率 Top |
+| 折叠行     | 说明 / 怎么读这个看板                                      |
+
+*** 日志量直方图紧贴日志流上方，这是刻意的
+Kibana / Grafana Explore / Datadog 都是这个组合： *先在直方图上看出
+「几点开始异常」，再往下读日志* 。直接翻日志流很容易错过起始时间点。
+
+它按 =detected_level= 堆叠，顺带取代了原来的级别饼图（饼图移到折叠行）。
+
+#+begin_quote
+分桶宽度用 =$__interval= （= Grafana 的 step）而不是 =$rate_window= ：
+速率窗口是 *滑动* 窗口，相邻桶大幅重叠，画出来是一整块实心色带，
+完全看不出趋势。另外必须配面板级 =interval: "30s"= 设最小步长——
+不设的话 30m 范围算出约 1 秒的 step，每桶只有 1~4 条，变成一排密集栅栏。
+两种错误形态我都截图踩过，见坑位 54。
+#+end_quote
+
+*** 「范围」下拉：默认排除基础设施
+实测近 6 小时： =loki= 自身 49.6 万条，而 =order-service= 2.1 万、
+=web-gateway= 2.1 万—— *基础设施日志占 96%* 。默认 All 时研发找自己服务的
+日志像大海捞针。
+
+| 选项             | 排除的命名空间                                            |
+|------------------+-----------------------------------------------------------|
+| 业务服务（默认） | =loki= / =kube-system= / =alloy= / =local-path-storage= / =_system= |
+| 含系统日志       | 同上但保留 =_system= （宿主机 journal）                   |
+| 全部             | =^$= ，等于不排除                                         |
+
+做成 =namespace!~"$scope"= 而不是正向匹配，是因为 *Loki 的 RE2 不支持负向
+先行断言* ，写不出「除了 loki 之外」的正向正则。正则全部锚定，否则
+=namespace!~"loki"= 会把 =myloki= 一起排掉。
+
+变量是 *单选* ：多选时 Grafana 的插值会把正则里的 =.= 转义掉（见坑位 29 旁注）。
+「命名空间」和「服务」两个下拉的候选值也受它收窄，所以 =scope= 必须排在
+它们 *之前* 。
+
+*** 错误占比 vs 错误数
+「错误数」 *刻意不做阈值着色* ：它随时间范围线性变化，30m 和 24h 差两个
+数量级，任何固定阈值在用户改范围时都会失真。判断是否异常看「错误占比」——
+*比例不随时间范围变化* 。
+
+阈值按实测基线定：本环境常态 *9.9~10.1%* （5m/30m/1h/6h 四个窗口都一样，
+demo 应用按固定比例造错误），所以 20% 转橙、40% 转红。
+*换到真实环境必须重新量基线再定* ，见坑位 19。
+
+*** 典型用法
+*「order-service 报错了」* → 服务选 =order-service= → 看「错误日志流」
+（Java 堆栈已合并成单条，直接能看到完整调用栈）。
+
+*「查订单 12345 的全链路」* → 关键字填 =orderId=12345= → 服务选 All →
+所有服务里提到这个订单的日志都出来。
+
+*「哪个接口在报 5xx」* → 展开「Nginx 访问日志分析」→ 看「错误率 Top 10 路径」
+和「5xx 错误请求」。选非 nginx 服务时这几个面板是 *空的* ——那是正确行为，
+见坑位 53。
+
+*** 两项采集端的配套改造
+看板能好用，靠的是 Alloy 这两个改动（不是看板本身的功劳）：
+
+*1. =app= 标签* —— 研发关心「我的服务」，而 =pod= 名带 ReplicaSet 哈希，
+每次发版都变，不适合给人用。Alloy 现在从 Pod 的 =app= 或
+=app.kubernetes.io/name= 标签生成 =app= 标签。
+
+#+begin_quote
+你的应用 Deployment 里要有 =app: <服务名>= 或
+=app.kubernetes.io/name: <服务名>= 标签，否则该服务在看板里没有 app 维度。
+#+end_quote
+
+*2. Java 异常堆栈合并 —— 不需要任何标注，自动生效。*
+一个 Java 异常在容器里是十几行独立输出，不合并的话在 Loki 里就是*十几条独立记录*
+（实测一个 NullPointerException 被拆成 10 条），多副本并发时还会和其他日志交错，
+研发基本没法看。
+
+*新增 Java 服务什么都不用做* ， =stage.multiline= 对所有 Pod 日志统一生效。
+
+原理是：multiline 的本质是「 *不匹配 firstline 的行 = 上一行的续行* 」。
+对每行都匹配 firstline 的服务，它就是个 no-op。所以只要 firstline 正则覆盖得够全，
+根本不需要知道谁是 Java 应用——这也是为什么不再需要 Pod 注解。
+
+实测各服务 *原始容器日志* 里不匹配 firstline 的行占比：
+
+| 服务                                       | 续行占比 | 说明                                      |
+|--------------------------------------------+----------+-------------------------------------------|
+| order-service                              | *43.0%*  | 正是要合并的堆栈（ =\tat com.example...= ） |
+| user-service                               | *42.0%*  | 同上                                      |
+| web-gateway / loki-ingester / cilium-agent | *0%*     | 每行独立，multiline 对它们无影响          |
+| *systemd journal*                          | *100%*   | 见下，这就是它不能走这条路的原因          |
+
+firstline 覆盖这几类行首（都在 =alloy/config.alloy= 的 =loki.process "cri"= 里）：
+
+#+begin_example
+2026-09-30T10:00:00 / 2026-09-30 10:00:00   ISO 时间戳（Java、Spring 等）
+10.0.0.1 - - [...]                          access log，IP 开头
+{"time":...}                                JSON
+level=info ts=...                           logfmt（Loki / Alloy 各组件）
+I0930 10:00:00                              klog（k8s 组件）
+2026/09/30 10:00:00                         nginx error log
+#+end_example
+
+#+begin_quote
+*为什么 multiline 放在 =loki.process "cri"= 而不是 =loki.process "common"=* ：
+systemd journal 的消息体 *100% 不匹配*时间戳行首（时间戳在 journal 元数据里，
+不在行内）。放在公共路径上会把宿主机日志整个糊成一坨。放在 cri 这条 pod 专用
+路径上，journal 完全不经过它。
+
+*新增服务如果日志行首格式不在上面几类里* ，它的每一行都会被当成续行合并到上一条。
+排查「某服务日志糊成一坨」时先查这里， =max_lines: 200= 是兜底。
+#+end_quote
+
+--------------
+
+** 验证手册
+部署完不要假设它是对的——下面每一条都是可直接粘贴执行的命令，用来 *自己证明* 各部分确实在工作。
+
+先定义一个辅助函数简化后续命令（ =lq= = loki query）：
+
+#+begin_src sh
+lq() { curl -s -H "X-Scope-OrgID: jasper" "http://10.0.0.12$1" "${@:2}"; }
+#+end_src
+
+用法是 =lq <路径> [额外的 curl 参数]= ，注意*路径前有空格*：
+
+#+begin_src sh
+lq /loki/api/v1/labels
+lq /loki/api/v1/query_range --data-urlencode 'query={job="loki/canary"}'
+lq /loki/api/v1/query --data-urlencode 'query=sum(count_over_time({job="loki/canary"}[1h]))'
+lq /loki/api/v1/labels -o /dev/null -w '%{http_code}\n'
+#+end_src
+
+*** 两个查询端点不要用混
+| 你要的是   | 端点                           | 查询长什么样                               |
+|-----------+--------------------------------+-------------------------------------------|
+| *日志行*  | =/loki/api/v1/query_range=     | {app="kubelet"} 流选择器                   |
+| *一个数字* | =/loki/api/v1/query= (instant) | sum(count_over_time({app="kubelet"}[1h])) |
+
+拿纯流选择器去打 instant 端点，会直接报这个错—— *不是命令写错了，是端点不支持* ：
+
+#+begin_example
+log queries are not supported as an instant query type, please change your query to a range query type
+#+end_example
+
+解法就是把端点换成 =query_range= ，其余原样不动。 *不用补 =start= / =end=* ，
+Loki 默认 =end=now= 、 =start=end-1h= 。
+
+原始返回是一大坨 JSON，用 jq 把时间和日志行抽出来才看得下去：
+
+#+begin_src sh
+lq /loki/api/v1/query_range \
+  --data-urlencode 'query={source="pod", namespace="loki", app="loki-read-gateway"}' \
+  --data-urlencode 'limit=20' \
+  | jq -r '.data.result[].values[] | "\(.[0]|tonumber/1000000000|todate)  \(.[1])"'
+#+end_src
+
+反过来，只要一个数字却用了 =query_range= ，会拿到一串按时间分桶的矩阵，
+也不是你想要的。看板里的 =logs= 类型面板同理，必须配 =query_range= 。
+
+*** 查出来是空的（ ="result":[]= ）先别急着怀疑命令
+=query_range= 默认只看 *最近 1 小时* 。这套集群空闲时段的日志量极低——实测
+~{app="kubelet"}~ 在凌晨整整 1 小时一条都没有， =kubectl get events -A= 也会因为
+事件 TTL 只有 1 小时而变成 0 条。 *空结果经常是真的没数据，不是查错了。*
+
+判断办法是拿一个 *一定有数据* 的选择器做控制项。 =loki-canary= 每个节点约
+1168 条/小时，是全栈最稳定的心跳源：
+
+#+begin_src sh
+lq /loki/api/v1/query_range --data-urlencode 'query={job="loki/canary"}' --data-urlencode 'limit=1'
+#+end_src
+
+控制项也空 → 是查询链路或时间窗的问题；控制项有数据 → 你那个选择器确实没日志，
+把时间窗拉大再看：
+
+#+begin_src sh
+lq /loki/api/v1/query_range \
+  --data-urlencode 'query={app="kubelet"}' \
+  --data-urlencode "start=$(date -d '24 hours ago' +%s)000000000" \
+  --data-urlencode 'limit=5'
+#+end_src
+
+#+begin_quote
+*不要写成 alias* 。曾经这里写的是
+~alias lq='curl -s -H "X-Scope-OrgID: jasper" http://10.0.0.12'~ ，
+然后按 =lq/loki/api/v1/labels= 这样当前缀用—— *这是错的* 。
+bash 的 alias 只替换命令的*第一个完整单词*，而 =lq/loki/api/v1/labels=
+整体是一个单词，不等于 =lq=，因此不会展开，会直接报：
+
+#+begin_example
+bash: lq/loki/api/v1/labels: No such file or directory
+#+end_example
+
+函数没有这个限制： =lq= 是独立的单词，路径作为 =$1= 传入，
+后面的 curl 参数由 ="${@:2}"= 原样透传。 *注意路径前必须有空格。*
+#+end_quote
+
+--------------
+
+*** A. 确认 Alloy 到底采集到了哪些标签
+这是最常问的问题。有四种手段，从粗到细：
+
+*A1. 列出所有标签名*
+
+#+begin_src sh
+lq /loki/api/v1/labels | jq .data
+#+end_src
+
+当前应返回（ =__stream_shard__= 和 =service_name= 是 Loki 自动生成的，不是 Alloy 打的）：
+
+#+begin_example
+container, environment, filename, job, level, namespace, node,
+pod, project, service_name, source, stream, syslog_identifier, unit
+#+end_example
+
+*A2. 看某个标签有哪些取值*
+
+#+begin_src sh
+lq /loki/api/v1/label/node/values | jq .data          # 应列出全部 5 个节点
+lq /loki/api/v1/label/unit/values | jq .data          # systemd unit，应含 kubelet.service
+lq /loki/api/v1/label/project/values | jq .data       # 应为 ["jp"]
+lq /loki/api/v1/label/environment/values | jq .data   # 应为 ["test"]
+#+end_src
+
+*A3. 看一条真实日志的完整标签集（最权威）*
+
+A1/A2 只能分别看到标签名和取值，看不到「一条日志实际带了哪些标签」。
+查一条真实日志，看返回里的 =stream= 字段：
+
+#+begin_src sh
+NOW=$(date +%s)
+lq /loki/api/v1/query_range \
+  --data-urlencode 'query={namespace="loki"}' \
+  --data-urlencode "start=$((NOW-600))000000000" \
+  --data-urlencode "end=${NOW}000000000" \
+  --data-urlencode 'limit=1' | jq '.data.result[0].stream'
+#+end_src
+
+输出示例：
+
+#+begin_src json
+{
+  "container": "ingester", "environment": "test", "filename": "/var/log/pods/...",
+  "job": "loki/ingester", "namespace": "loki", "node": "node01.jasper.org",
+  "pod": "loki-ingester-0", "project": "jp", "service_name": "ingester", "stream": "stderr"
+}
+#+end_src
+
+*A4. 看 Alloy 自己的运行状态*
+
+Alloy 内置 UI（本集群已通过 LoadBalancer 暴露）：
+
+#+begin_example
+http://10.0.0.13:12345
+#+end_example
+
+能看到组件依赖图、每个组件的健康状态、以及 =loki.source.file= 实际匹配到了多少个文件。
+排查「某类日志没采到」时，先看这里的组件是不是 unhealthy。
+
+命令行版：
+
+#+begin_src sh
+curl -s http://10.0.0.13:12345/-/ready                      # 应返回 ready
+curl -s http://10.0.0.13:12345/metrics | grep loki_write_sent_entries_total
+#+end_src
+
+--------------
+
+*** B. 验证静态标签（project / environment）覆盖了全部日志
+=project=jp= 和 =environment=test= 由 Alloy 的 =loki.process "common"= 统一打上，
+Pod 日志和 journal 两条路径都必须经过它。对比带不带标签的日志条数：
+
+#+begin_src sh
+lq /loki/api/v1/query --data-urlencode 'query=sum(count_over_time({job=~".+"}[2m]))'
+lq /loki/api/v1/query --data-urlencode 'query=sum(count_over_time({job=~".+", project="jp", environment="test"}[2m]))'
+#+end_src
+
+两个数应该相等。
+
+#+begin_quote
+*重要* ：标签是 *写入时* 打上的，不会回溯已有数据。刚改完配置时若用 5m/1h 窗口去比，
+会因为混入改动前的旧日志而显示覆盖率不足（实测当时是 28%）。
+必须用 *改动生效之后* 的时间窗（1~2 分钟）来比，那时应为 100%。
+#+end_quote
+
+单独确认 journal 这条路径也打上了（往 journal 写一条再查回来）：
+
+#+begin_src sh
+logger -t label-test "verification $(date +%s)"
+sleep 20
+NOW=$(date +%s)
+lq /loki/api/v1/query_range \
+  --data-urlencode 'query={job="systemd-journal"} |= `verification`' \
+  --data-urlencode "start=$((NOW-120))000000000" --data-urlencode "end=${NOW}000000000" \
+  | jq '.data.result[0].stream'
+#+end_src
+
+返回的 stream 里应同时有 =project= 、 =environment= 、 =unit= 、 =node= 。
+
+--------------
+
+*** C. 验证告警规则确实有效
+分三层，从「能加载」到「真能触发」。
+
+*C1. 规则加载了吗？语法对吗？*
+
+#+begin_src sh
+kubectl port-forward -n loki loki-ruler-0 3110:3100 &
+curl -s -H 'X-Scope-OrgID: jasper' \
+  http://127.0.0.1:3110/prometheus/api/v1/rules | jq -r \
+  '.data.groups[].rules[] | "\(.name)  state=\(.state)  health=\(.health)"'
+#+end_src
+
+期望输出：
+
+#+begin_example
+HighErrorLogRate         state=inactive  health=ok
+KubeletErrorLogs         state=inactive  health=ok
+NodeLogShippingStalled   state=inactive  health=ok
+LogIngestionSpike        state=inactive  health=ok
+LokiComponentErrors      state=inactive  health=ok
+LokiObjectStorageDenied  state=inactive  health=ok
+#+end_example
+
+怎么读这两个字段：
+
+- *health=ok* = LogQL 解析成功且能正常求值。若为 =err=，说明表达式写错了，
+  规则 *永远不会触发* ——这是最容易被忽略的静默失败。
+- *state* =inactive= （条件不成立）/ =pending= （条件成立，等待 =for= 时长）
+  / =firing= （已触发）。
+
+#+begin_quote
+若 =data.groups= 为空，说明规则根本没加载。常见原因是 =rulerConfig.storage=
+仍是 s3（ruler 去对象存储找规则），需改成 =local= —— 见坑位 7。
+#+end_quote
+
+*C2. 表达式在当前数据下成立吗？*
+
+把规则的 =expr= 原样丢给查询 API，返回非空即代表条件成立：
+
+#+begin_src sh
+lq /loki/api/v1/query --data-urlencode 'query=sum by (namespace) (rate({namespace=~".+", namespace!="loki"} |~ `(?i)(^|[^a-z])(error|fatal|panic)([^a-z]|$)` [5m])) > 2'
+#+end_src
+
+返回 =result: []= = 当前不该触发（正常）；返回带值的序列 = 会触发。
+
+这是 *排查误报/漏报最快的手段* ：把 => 2= 去掉再跑一次，就能看到实际数值离阈值多远。
+
+*C3. 端到端真实触发一次（最终证明）*
+
+前两步只说明「规则没写错」，不能证明「链路真的通」。下面故意制造日志把它打上去。
+实测过程见后面的记录。
+
+#+begin_src sh
+kubectl create ns alert-test
+
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: error-spewer
+  namespace: alert-test
+spec:
+  restartPolicy: Never
+  containers:
+  - name: spew
+    # 用集群里已有的镜像，避免 docker.io 不可达
+    image: docker.io/nginxinc/nginx-unprivileged:1.31-alpine
+    command: ["/bin/sh","-c"]
+    args:
+      - |
+        i=0
+        while [ $i -lt 3000 ]; do
+          echo "ERROR simulated failure for alert verification seq=$i"
+          i=$((i+1)); sleep 0.1
+        done
+    resources:
+      requests: {cpu: 20m, memory: 32Mi}
+      limits: {memory: 64Mi}
+EOF
+#+end_src
+
+以 10 条/秒输出 ERROR，阈值是 2 条/秒。
+
+#+begin_quote
+*测试 Pod 必须跑得比 =for:= 更久* 。第一次验证时我让它跑 3000 次 x 0.1s = 5 分钟，
+结果告警在 =pending= 停了 5 分半就回落 =inactive=，始终没到 =firing= ——
+因为 =for: 10m= 要求条件*持续成立 10 分钟*，而 Pod 跑完日志就停了，
+5m 速率窗口随即衰减到阈值以下。上面的 yaml 已改成按时间跑满 960 秒（16 分钟）。
+#+end_quote
+
+然后每 50 秒看一次状态：
+
+#+begin_src sh
+while true; do
+  curl -s -H "X-Scope-OrgID: jasper" \
+    http://127.0.0.1:3110/prometheus/api/v1/rules \
+    | jq -r '.data.groups[].rules[]
+             | select(.name=="HighErrorLogRate")
+             | "\(.state) alerts=\(.alerts|length)"'
+  sleep 50
+done
+#+end_src
+
+*实测观测到的完整过程* （下表是真实跑出来的，不是推断）：
+
+| 时刻     | 状态                | 说明                                   |
+|----------+---------------------+----------------------------------------|
+| 08:21:20 | =inactive=          | Pod 刚起，日志还没积累够               |
+| 08:23:50 | =pending= ，alerts=1 | 条件成立，开始计 =for= 时长            |
+| 08:33:15 | *=firing=*          | 恰好 10 分钟后触发，与 =for: 10m= 吻合 |
+
+firing 时的告警内容：
+
+#+begin_src json
+{
+  "state": "firing",
+  "labels": {"alertname": "HighErrorLogRate", "component": "workload",
+             "namespace": "alert-test", "severity": "warning"},
+  "value": "9.66e+00",
+  "annotations": {"summary": "命名空间 alert-test 错误日志偏多"}
+}
+#+end_src
+
+=value=9.66= 条/秒远超阈值 2； =namespace= 标签正确带出；
+注解模板 ={{ $labels.namespace }}= 正常渲染成了具体命名空间。
+
+=pending= 出现即证明「采集 -> 写入 -> 规则求值」链路是通的；
+=firing= 则额外证明 =for= 计时逻辑正确。
+
+清理：
+
+#+begin_src sh
+kubectl delete ns alert-test
+#+end_src
+
+*C4. 通知真的发出去了吗？*
+
+#+begin_src sh
+kubectl logs -n loki loki-ruler-0 --since=5m | grep "Error sending alerts"
+#+end_src
+
+当前 =alertmanager_url= 是占位地址，所以*必然*看到：
+
+#+begin_example
+msg="Error sending alerts" alertmanager=http://prom:9093/api/v2/alerts
+err="dial tcp: lookup prom on 10.96.0.10:53: no such host"
+#+end_example
+
+这条日志本身就是证据——说明 ruler 确实在尝试推送。部署真的 Alertmanager 后这条应消失。
+
+--------------
+
+*** D. 验证 Grafana 看板
+*关键教训：不要自己另写一份查询去测* 。必须取「看板里实际存储的表达式」，
+只把模板变量替换成 Grafana 会发送的值。否则测的是另一个东西——
+本项目第一版就是这么踩的坑：手动把窗口换成 =[5m]= 测，11 个面板全绿，
+但看板里存的是 =$__rate_interval= （Grafana 的 Loki 数据源不插值它），打开全是报错。
+
+#+begin_src sh
+curl -s -u admin:admin \
+  http://10.0.0.101:3000/api/dashboards/uid/loki-log-overview > /tmp/dash.json
+
+python3 - <<'PYEOF'
+import json, subprocess, time
+d = json.load(open("/tmp/dash.json"))["dashboard"]
+now = int(time.time())
+# 模拟 Grafana 插值：All -> .+
+sub = {"$rate_window":"5m", "$project":".+", "$environment":".+",
+       "$job":".+", "$namespace":".+", "$node":".+"}
+fails = []
+for p in d["panels"]:
+    for t in p.get("targets", []):
+        e = t["expr"]
+        for k, v in sub.items():
+            e = e.replace(k, v)
+        # logs 类型面板必须用 query_range，instant 端点不支持日志流查询
+        if p["type"] == "logs":
+            url = "http://10.0.0.12/loki/api/v1/query_range"
+            args = ["--data-urlencode", "query="+e,
+                    "--data-urlencode", "start=%d000000000" % (now-1800),
+                    "--data-urlencode", "end=%d000000000" % now,
+                    "--data-urlencode", "limit=3"]
+        else:
+            url = "http://10.0.0.12/loki/api/v1/query"
+            args = ["--data-urlencode", "query="+e]
+        r = subprocess.run(["curl","-s","--max-time","30",
+                            "-H","X-Scope-OrgID: jasper", url] + args,
+                           capture_output=True, text=True)
+        try:
+            ok = json.loads(r.stdout).get("status") == "success"
+        except Exception:
+            ok = False
+        if not ok:
+            fails.append((p["title"], r.stdout[:100]))
+print("失败:", fails if fails else "无，全部面板查询正常")
+PYEOF
+#+end_src
+
+另外检查看板里没有残留不被插值的内置变量：
+
+#+begin_src sh
+jq -r '.dashboard.panels[].targets[].expr' /tmp/dash.json | grep -o '\$__[a-z_]*' | sort -u
+#+end_src
+
+应无输出。若出现 =$__rate_interval= 就是坑位 16。
+
+--------------
+
+*** E. 一键体检
+把最关键的几项串起来，部署后跑一遍：
+
+#+begin_src sh
+#!/bin/bash
+lq() { curl -s -H "X-Scope-OrgID: jasper" "http://10.0.0.12$1" "${@:2}"; }
+val() { jq -r '.data.result[0].value[1] // 0'; }
+
+echo "1. 查询接口放行   : $(lq /loki/api/v1/labels -o /dev/null -w '%{http_code}')  (期望 200)"
+echo "2. 写入接口拒绝   : $(lq /loki/api/v1/push -o /dev/null -w '%{http_code}' -XPOST -d '{}')  (期望 403)"
+echo "3. 上报节点数     : $(lq /loki/api/v1/query --data-urlencode 'query=count(count by (node)(count_over_time({node=~".+", source!="kubernetes-events"}[1h])))' | val)  (期望 5)"
+echo "4. 静态标签       : $(lq /loki/api/v1/label/project/values | jq -c .data) $(lq /loki/api/v1/label/environment/values | jq -c .data)"
+echo "5. kubelet 日志   : $(lq /loki/api/v1/query --data-urlencode 'query=sum(count_over_time({unit="kubelet.service"}[1h]))' | val) 条/小时"
+echo "6. Alloy 就绪     : $(kubectl get pods -n alloy --no-headers | grep -c '2/2')/6  (5 DaemonSet + 1 events)"
+echo "7. Loki 就绪      : $(kubectl get pods -n loki --no-headers | grep -c Running) 个 Running"
+echo "8. 集群事件       : $(lq /loki/api/v1/query --data-urlencode 'query=sum(count_over_time({source="kubernetes-events"}[1h]))' | val) 条/小时"
+#+end_src
+
+*** F. 看板显示 0，先确认是不是真的没流量
+*面板全是 0 往往不是面板坏了，而是窗口内确实没什么请求。*
+=QPS= 这类面板算的是 =sum(rate(... [$rate_window]))= ——零星几个请求分摊到
+5 分钟窗口，算出来 0.02 req/s，四舍五入显示就是 0。
+
+要验证面板到底有没有在工作，得造一段*持续且有起伏*的流量
+（恒定流量只能画出一条平线，看不出面板是否跟随变化）：
+
+#+begin_src sh
+bash /root/loki-stack/grafana/gen-gateway-traffic.sh
+#+end_src
+
+脚本跑约 7 分钟，分三段：低谷 2 req/s → 高峰 12 req/s → 回落 4 req/s，
+其中混了约 5% 的慢请求（ =?echo_time=1200~2500= ，用来喂 P95 和「慢请求 >1s」面板）
+和约 13% 的 4xx/5xx。实测结果：
+
+#+begin_example
+10:33:00   0.21 #
+10:34:30   0.85 ####
+10:36:00   4.40 ########################
+10:37:30   7.84 ###########################################
+10:39:30   8.57 ################################################   <- 高峰
+10:40:30   6.23 ##################################
+10:41:30   3.87 #####################                              <- 回落
+#+end_example
+
+同期 错误率峰值 1.07 req/s、P95 峰值 1.583s、慢请求面板 166 条——四个面板都正常。
+
+#+begin_quote
+慢请求靠 echo-server 的 =?echo_time=<毫秒>= 造，状态码靠 =?echo_code=<码>= 。
+这两个参数不影响服务本身，比停 Pod 造故障安全得多。
+#+end_quote
+
+*读数比实际流量低是正常的* ， =rate()= 在滑动窗口里做平均，窗口越长削峰越狠。
+同一段流量（高峰 12 req/s 持续 180 秒）在不同窗口下的面板峰值：
+
+| rate_window | 面板峰值 |                          |
+|-------------+----------+--------------------------|
+| 1m          | *11.98*  | 最接近瞬时真值，曲线更抖 |
+| 5m          | 8.56     | 看板默认，平滑但削峰     |
+| 10m         | 4.72     | 短促的高峰几乎被抹平     |
+| 30m         | 1.58     | 只适合看长期趋势         |
+
+所以 *排查突发问题时把顶部「速率窗口」调到 1m* ，看长期趋势再调大。
+
+--------------
+
+** 传输与存储压缩
+*** 存储：已压缩
+=chunk_encoding: gzip= ，实测压缩率 *5.38x* （来自 ingester metrics：
+2,976,693 条日志压成 106MB）。
+
+*** 传输：两处，都要开
+日志 JSON 高度重复（相同的标签名、字段名反复出现），压缩比远高于一般数据。
+*实测开启前后*：
+
+|                     | 下载字节 | content-encoding |
+|---------------------+----------+------------------|
+| 开启前              | 179,954  | （无）           |
+| 开启后（要求 gzip） | *23,422* | gzip             |
+
+不同查询规模的压缩比（本地实测）：
+
+| 查询规模       | 原始      | gzip 后 | 压缩比 |
+|----------------+-----------+---------+--------|
+| 30m / 200 条   | 107,927   | 10,782  | 10.0x  |
+| 60m / 1000 条  | 457,423   | 42,248  | 10.8x  |
+| 120m / 5000 条 | 2,284,182 | 175,800 | 13.0x  |
+
+*第一处：只读网关的 nginx*（ =loki/parts/read-gateway-nginx.conf= ，主力）
+
+#+begin_quote
+这份配置已从 Loki values 的 =extraObjects= 里 *挪出来* ，改成独立 ConfigMap
+（和 =alloy-config=、=loki-alert-rules= 一致）。改完 *不需要 helm upgrade* ：
+
+#+begin_src sh
+cd /root/loki-stack/loki/parts
+kubectl create cm loki-read-gateway -n loki \
+  --from-file=nginx.conf=read-gateway-nginx.conf \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deploy/loki-read-gateway -n loki   # nginx 要 reload 才生效
+#+end_src
+
+values 的 =extraObjects= 里现在只剩 Deployment 和 Service，
+为将来把整个只读网关从 Loki chart 里独立出去留好了口子。
+#+end_quote
+
+#+begin_src nginx
+gzip on;
+gzip_types application/json text/plain;
+gzip_comp_level 4;      # 性价比拐点，再高 CPU 涨得快、体积只多省几个点
+gzip_min_length 1k;     # 小响应压了反而更大（gzip 头部开销）
+gzip_proxied any;       # 必须显式开，否则带 Via 头的代理响应一律不压
+gzip_vary on;
+#+end_src
+
+=gzip_proxied any= 最容易漏—— *默认是 off，而这里 nginx 本身就是反向代理，不加这行等于没开* 。
+
+*第二处：Loki 自己* （ =values-distributed.yaml= ）
+
+#+begin_src yaml
+loki:
+  frontend:
+    compress_responses: true
+#+end_src
+
+两者不冲突：nginx 看到上游响应已带 =content-encoding= 就不会再压一次。
+留着 Loki 这一处是为了 Grafana 万一直连 Loki（不过网关）时压缩仍然生效——
+实测直连也能压到 24KB 左右。
+
+#+begin_quote
+改完 nginx 配置后 *ConfigMap 更新不会自动重启 Pod* ，要
+=kubectl rollout restart deploy/loki-read-gateway -n loki= 才生效。
+#+end_quote
+
+#+begin_quote
+Grafana 的 Loki 数据源默认就会发 =Accept-Encoding: gzip= ，服务端开了即生效，
+不用改 Grafana 那边。
+#+end_quote
+
+*** NGF 数据面（所有域名的入口）
+数据面的 =nginx.conf= 由 NGF 控制器生成，*不能直接改*。注入配置有两条路：
+
+|                  | 作用对象              | 适用                                |
+|------------------+-----------------------+-------------------------------------|
+| SnippetsFilter   | HTTPRoute / GRPCRoute | 要在每条路由里显式引用              |
+| *SnippetsPolicy* | *Gateway*             | 一次配置，该 Gateway 下所有路由生效 |
+
+gzip 要下在 =http= 上下文、对整个入口生效，所以用 *SnippetsPolicy*
+（留档 =ngf-gzip-snippetspolicy.yaml= ）。
+
+开关是 =nginxGateway.snippets.enable: true= ——注意 *不是* =snippetsFilters.enable= ，
+后者已被 chart 标记 deprecated 且只启用 SnippetsFilter，SnippetsPolicy 不会生效。
+控制器启动参数会从 =--snippets-filters= 变成 =--snippets= ，可以用这个确认开没开。
+
+实测 *2187 → 686 字节* （3.2x）。注意这个比例比 Loki 查询的 10x 低——
+echo 响应是结构化 JSON 但重复度不如日志，这是正常的。
+
+*静态文件压缩* ： =gzip_types= 覆盖了 CSS / JS / JSON / XML / SVG，
+*刻意排除* 已经是压缩格式的类型（png/jpg/gif/webp、woff2、视频、zip）——
+对它们再压一遍只烧 CPU，体积还可能变大。 =text/html= 不用列，nginx 总是压它。
+实测确认：
+
+#+begin_example
+text/css               -> gzip      application/javascript -> gzip
+application/json       -> gzip      image/svg+xml          -> gzip
+image/png              -> 不压（正确）
+#+end_example
+
+#+begin_quote
+snippet 不会直接出现在 nginx.conf 里，而是被放进
+=/etc/nginx/includes/SnippetsPolicy_http_<ns>-<name>.conf= 再 include 进来。
+验证时 =grep gzip /etc/nginx/nginx.conf= 会扑空，要去 =conf.d/= 和 =includes/= 找。
+#+end_quote
+
+*** 没开的压缩
+=grpc_compression: ""= （组件间 gRPC）在本环境是空的。组件都在同一个集群内网，
+压缩省下的带宽换不回 CPU，保持关闭。跨区域部署组件时才值得考虑。
+
+--------------
+
+** 容量与限流
+实测稳态写入量极小（仅 Pod + journal，无业务负载）：
+
+| 指标        | 实测        | 限流配置                             | 占用    |
+|-------------+-------------+--------------------------------------+---------|
+| 写入速率    | ~0.2 KB/s   | =ingestion_rate_mb: 8=               | < 0.01% |
+| 活跃 stream | 15 条       | =max_global_streams_per_user: 10000= | 0.15%   |
+| 日增量      | ~0.02 GB/天 | —                                    | —       |
+
+限流值是 *护栏* 不是瓶颈，留了 2-3 个数量级余量。真正的风险不是数据量，而是
+*标签基数* ： =pod= 标签会随 ReplicaSet 滚动不断产生新 stream。若要加标签，
+务必避免把高基数字段（request_id、trace_id、IP）做成标签。
+
+*** 保留策略（分级）
+全局默认 28 天，另有两条按流覆盖的规则，配置在 =values-distributed.yaml=
+的 =limits_config= ：
+
+| 流                           | 保留            | 理由                       |
+|------------------------------+-----------------+----------------------------|
+| {source="kubernetes-events"} | 7 天            | 排障当时要看，过后价值迅速衰减 |
+| {source="systemd"}           | 7 天            | 同上                       |
+| 其余（业务容器日志）           | 28 天（全局默认） | 要支撑更长周期的回溯         |
+
+#+begin_src yaml
+limits_config:
+  retention_period: 672h          # 全局默认 28 天
+  retention_stream:
+  - selector: '{source="kubernetes-events"}'
+    priority: 10                  # 数字大的优先
+    period: 168h                  # 7 天
+  - selector: '{source="systemd"}'
+    priority: 10
+    period: 168h
+#+end_src
+
+=selector= *只能用索引标签* （ =source= 是索引标签，可以；结构化元数据不行）。
+不匹配任何规则的流落到全局默认值。改完需要 =helm upgrade= 。
+
+实测全栈才 0.02GB/天，现在远不是容量问题——分级机制先跑通并留档，
+等量涨上来直接改数字即可。
+
+*怎么确认保留真的在工作* （改完后跑一遍）：
+
+#+begin_src sh
+# 1. 配置有没有被加载。Loki 镜像是 distroless，容器里没有 wget/curl，
+#    只能 port-forward 从外面打。
+kubectl port-forward -n loki deploy/loki-compactor 13100:3100 >/dev/null 2>&1 &
+sleep 3
+curl -s http://127.0.0.1:13100/ready                      # 控制项，应输出 ready
+curl -s http://127.0.0.1:13100/config | grep -A9 'retention_stream:'
+kill %1
+
+# 2. compactor 有没有在跑回收（retention_enabled 必须为 true 才有这行）
+kubectl logs -n loki deploy/loki-compactor | grep 'smallest retention' | tail -3
+#+end_src
+
+*怎么读这个数字* （光 grep 出来看不出规则生效没有）：它是「最短保留期对应的
+截止时刻」的 Unix 时间戳， *拿日志时刻减去它* 才是实际保留天数。
+
+#+begin_src sh
+# 实测：日志 ts=2026-09-29T17:46:12Z，值 overall smallest retention period 1790099172
+date -u -d '2026-09-29T17:46:12Z' +%s          # -> 1790703972
+# 1790703972 - 1790099172 = 604800 秒 = 7 天   <- 168h 的 stream 规则生效了
+# 加规则之前同一条日志是 2419200 秒 = 28 天     <- 全局 672h
+#+end_src
+
+#+begin_quote
+=overall= 和 =default= 两个值 *相等是正常的* ，不代表规则没生效：
+=overall= 只在配了 per-tenant override（runtime_config）时才会与 =default= 不同，
+而 =default= 本身已经把 =limits_config= 里的 =retention_stream= 算进去了。
+判据是那个数字对应几天，不是两者是否相等。
+#+end_quote
+
+#+begin_quote
+真正的删除还要再等 =retention_delete_delay: 2h= ，所以改完当天观测不到文件减少，
+这不是故障。
+#+end_quote
+
+*刚 upgrade 完立刻去看是不会有 =smallest retention= 日志的，那不是故障。*
+compactor 启动后先等 10 分钟让 ring 稳定
+（日志： =waiting 10m0s for ring to stay stable and previous compactions to finish= ），
+之后才按 =compaction_interval: 10m= 压缩、=apply_retention_interval: 15m= 应用保留策略。
+判断它是否活着，用压缩活动做控制项，别只看 retention 那一行：
+
+#+begin_src sh
+kubectl logs -n loki deploy/loki-compactor | grep -c 'compacting table'
+#+end_src
+
+--------------
+
+** 告警规则
+7 条，定义在 =loki/parts/loki-alerts.yaml= ，由外部 ConfigMap =loki-alert-rules= 提供
+（改完 =kubectl create cm ... | kubectl apply -f -= 即可，ruler 每 30 秒轮询，
+*不需要 helm upgrade* ）。
+
+| 规则                         | 触发条件                                                        |
+|------------------------------+-----------------------------------------------------------------|
+| NodeLogShippingStalled       | 15 分钟内有 canary 心跳的节点数少于 24 小时内出现过的（自校准） |
+| LogIngestionSpike            | 总写入 > 500 条/秒                                              |
+| HighErrorLogRate             | 某命名空间错误日志 > 2 条/秒                                    |
+| KubeletErrorLogs             | 某节点 kubelet 错误 > 1 条/秒                                   |
+| LokiComponentErrors          | Loki 组件错误 > 1 条/秒                                         |
+| LokiObjectStorageDenied      | 10 分钟内出现存储鉴权错误                                       |
+| *GatewayHostCardinalityHigh* | 1 小时内不同 Host 头 > 30 个，持续 10 分钟（可能正被扫描）      |
+
+=GatewayHostCardinalityHigh= 是 host 标签保留真实值的配套护栏。阈值按实测定：
+正常情况 host 取值 = 实际配置的 hostname 数（当前只有 =echo.jasper.org= ），
+基线个位数；30 远高于正常、又远低于真实扫描的规模。
+表达式里的 =host=~".+"= 不能省——没有 host 标签的流（nginx error log、agent 日志）
+会被 =count by (host)= 归进空值一组，白白多算一个。
+
+=alertmanager_url= 目前是占位地址 =http://prom:9093= ， *告警只会评估不会真正发出* 。
+要真正告警需部署 Alertmanager 并改这个地址。
+
+#+begin_quote
+副作用：ruler 的 notifier 会每分钟重试一次并失败，在 loki 命名空间产生约
+1 条/分钟的 ~level=error ... msg=\"Error sending alerts\" ... no such host~ 。
+这是占位地址的必然结果，无害：换算成 0.017 条/秒，距离 LokiComponentErrors
+的 1 条/秒阈值有 60 倍余量，不会误触发。
+#+end_quote
+
+--------------
+
+** S3 凭证轮换
+Loki 用的是 =loki-svc= 名下的*服务账号* （svcacct），不是用户密码。两者要分清：
+
+| 凭证                | 谁在用                                     | 泄露后果               |
+|---------------------+--------------------------------------------+------------------------|
+| svcacct 的 AK/SK    | Loki，从 Secret =loki-s3-credentials= 注入 | 能读写 =loki-test= 桶  |
+| =loki-svc= 用户密码 | 只用于 =mc= / console 以该用户登录         | 能自己签发新的 svcacct |
+
+轮换能做到不中断，前提是 *MinIO 允许一个用户同时挂多把服务账号* ，
+新旧并存期间两把都有效。所以顺序必须是「先建新 → 切换 → 再删旧」，不能反过来。
+
+*** 1. 新建，确认并存
+#+begin_src sh
+mc admin user svcacct add minio loki-svc
+mc admin user svcacct list minio loki-svc    # 应列出两行
+#+end_src
+
+看到两行再往下走——这一步本身就是对「并存」这个前提的验证。
+
+*** 2. 更新 Secret
+#+begin_src sh
+kubectl -n loki delete secret loki-s3-credentials
+read -rsp 'AK: ' AK; echo
+read -rsp 'SK: ' SK; echo
+kubectl -n loki create secret generic loki-s3-credentials \
+  --from-literal=AWS_ACCESS_KEY_ID="$AK" \
+  --from-literal=AWS_SECRET_ACCESS_KEY="$SK" \
+  --from-literal=AWS_EC2_METADATA_DISABLED=true
+unset AK SK
+#+end_src
+
+=delete= + =create= 是整体替换，别漏掉 =AWS_EC2_METADATA_DISABLED= 。
+
+*** 3. 滚动重启（最容易漏的一步）
+改 Secret *不会* 让 Pod 重启——Deployment 的 spec 一个字没变。而 =envFrom=
+的环境变量是容器启动时读一次，不重启就还在用旧凭证。详见坑位 44。
+
+#+begin_src sh
+for d in query-scheduler query-frontend querier distributor index-gateway \
+         compactor ruler pattern-ingester ingester; do
+  kubectl -n loki rollout restart deploy/loki-$d
+  kubectl -n loki rollout status  deploy/loki-$d --timeout=180s
+done
+#+end_src
+
+ingester 放最后：3 副本的 =maxSurge=1 / maxUnavailable=0= 逐个重启最慢，
+但全程保持 3 个就绪，满足 =replication_factor: 3= 的写入 quorum。
+
+*** 4. 确认每个 Pod 都晚于 Secret
+#+begin_src sh
+SECRET_TS=$(kubectl -n loki get secret loki-s3-credentials -o jsonpath='{.metadata.creationTimestamp}')
+echo "Secret: $SECRET_TS"
+for d in distributor ingester querier query-frontend query-scheduler \
+         compactor index-gateway ruler pattern-ingester; do
+  kubectl -n loki get pods -l app.kubernetes.io/component=$d \
+    -o jsonpath="{range .items[*]}{.metadata.name}{'\t'}{.status.startTime}{'\n'}{end}"
+done | awk -v s="$SECRET_TS" '{printf "  %-42s %s  %s\n", $1, $2, ($2>s ? "OK" : "!! 早于 Secret")}'
+#+end_src
+
+全是 =OK= 才算切干净。出现 =!!= 就回去补那个组件的 =rollout restart= 。
+
+*** 5. 禁用旧 key，观察
+这一步是真正的验证，不是走过场：还有组件在用旧 key 的话，禁用后立刻报错。
+
+#+begin_src sh
+OLD_AK=""          # 填入要废弃的那把 AccessKey
+mc admin user svcacct disable minio "$OLD_AK"
+sleep 300
+for c in distributor ingester querier compactor index-gateway ruler pattern-ingester; do
+  n=$(kubectl -n loki logs deploy/loki-$c --since=5m --all-containers 2>/dev/null \
+      | grep -icE 'accessdenied|invalidaccesskeyid|signaturedoesnotmatch')
+  printf '  %-22s %s\n' "loki-$c" "$n"
+done
+#+end_src
+
+全 0 才继续。
+
+#+begin_quote
+查日志 *别用 =grep -i credential= 这种宽匹配* ：ruler 会在 info 级别回显
+=LokiObjectStorageDenied= 规则的 LogQL，而那条规则的表达式里字面就含
+=AccessDenied|SignatureDoesNotMatch|NoSuchBucket= ，会撞出一堆假阳性。
+用上面那组精确的错误码。
+#+end_quote
+
+*** 6. 删除旧 key
+#+begin_src sh
+OLD_AK=""          # 填入要废弃的那把 AccessKey
+mc admin user svcacct rm minio "$OLD_AK"
+mc admin user svcacct list minio loki-svc    # 应只剩新的一行
+#+end_src
+
+第 5 步之前随时可以 =mc admin user svcacct enable minio "$OLD_AK"= 回退；
+第 6 步之后不可逆，所以 disable 与 rm 之间要留足观察时间。
+
+*** 轮换用户密码（与 Loki 无关，可单独做）
+#+begin_src sh
+read -rsp 'loki-svc 新密码: ' PW; echo
+mc admin user add minio loki-svc "$PW"                  # 同名重复 add 即改密码
+unset PW
+mc admin policy attach minio loki-rw --user loki-svc    # 确认策略仍在，重复 attach 幂等
+#+end_src
+
+*改密码会不会让已有 svcacct 失效，没有实测过。* 判断是不会（服务账号有自己独立的
+secret，不从父用户密码派生），但判断错的后果是 Loki 整体掉线。所以
+*先轮换 svcacct，再改密码* ，别同一时间动两样——出问题时分不清是哪个引起的。
+改完立刻验：
+
+#+begin_src sh
+CUR_AK=""          # 填入 Loki 当前在用的那把 AccessKey
+mc admin user svcacct info minio "$CUR_AK"
+kubectl -n loki logs deploy/loki-ingester --since=2m | grep -ic accessdenied
+#+end_src
+
+*** 几条硬约束
+- =mc admin user rm minio loki-svc= *会连带删掉它名下所有 svcacct* ，Loki 立刻全挂。
+  想重置用户，别走「删了重建」这条路。
+- *不要给 Loki 的 svcacct 设 =--expiry=* 。Loki 不会自动续期，到期就是一次毫无预兆的
+  全栈写入中断，而且必然发生在没人盯着的时候。周期轮换靠流程和日程，不靠过期时间。
+- 新的 AK/SK 不要写进文档，也不要粘贴到聊天或工单里。文档里一律用 =read -rsp=
+  交互输入，命令本身不含密钥。
+
+--------------
+
+** 关键坑位（重建时务必注意）
+*** Loki
+1. *要用 PVC 就必须先有 StorageClass* ，否则 PVC 永久 Pending——集群默认一个都没有。
+   当前部署是零 PVC 的，所以这条只在你重新启用 =persistence= 时才相关，
+   步骤 1 平时可以跳过。
+2. *chunks-cache 默认 =allocatedMemory: 8192=（MB）* → 换算成 9830Mi 的 request，
+   3.2Gi 节点永远调度不上。已改为 256。
+3. *ingester 的 zone-aware replication 默认开启* → 渲染出 zone-a/b/c 三个 StatefulSet，
+   彼此带 required 级 podAntiAffinity 要求 3 个不同节点。2 worker 必须关掉。
+4. *ingester 自身还有 required 级 podAntiAffinity* （同节点不得有两个），3 副本 / 2 worker
+   无解，已降为 preferred。
+
+   #+begin_quote
+   *Helm 对 map 是合并不是替换* ，必须显式写
+   =requiredDuringSchedulingIgnoredDuringExecution: null= 才能删掉默认规则。
+   #+end_quote
+
+5. *不要设 ~singleBinary.kind: Deployment~*  → chart 默认 =strategy= 含
+   =rollingUpdate.partition= （StatefulSet 专有字段），渲染进 Deployment 会被 API schema 拒绝。
+6. *Monolithic 与 Distributed 之间没有过渡模式* → 切换时必须同一次变更里把
+   =singleBinary.replicas= 归零，旧的 =storage-loki-0= PVC 需手动删。
+7. *ruler 的 storage 默认继承 ~loki.storage（S3）~ *  → 它会去 MinIO 找规则文件，
+   而 =ruler.directories= 生成的 ConfigMap 是挂载到本地目录的。必须显式设
+   =rulerConfig.storage.type: local= + =local.directory: /etc/loki/rules= 。
+8. *给已存在的 StatefulSet 新增 persistence 会失败* （ =volumeClaimTemplates= 不可变），
+   需先删除该 StatefulSet 再 upgrade。
+9. *MinIO 的 AK 是 20 字符、SK 是 40 字符* ，别写反。
+
+*** Alloy
+10. *必须以 root 运行* （ =securityContext.runAsUser: 0=），否则读不了 =/var/log/pods=
+    与 =/var/log/journal= 下 root 属主的文件。
+11. *Pod 所在节点的元标签是 =__meta_kubernetes_pod_node_name=*，不是
+    =__meta_kubernetes_node_name= （后者对 =role: pod= 无效，得到空标签）。
+12. *journal 需要挂载 ~/etc/machine-id~* （通过 =controller.volumes.extra= +
+    =alloy.mounts.extra=）。
+13. *=max_age = "1m"= 配合 emptyDir 的 storagePath* → 每次重启都从当前时刻附近开始，
+    不会回灌 152MB 历史 journal。
+14. 部署前用 =alloy validate= 校验配置（=alloy fmt= 只查语法，=validate= 查组件参数）。
+
+*** 告警规则的自激反馈环（重要）
+15. [@15] Loki 的 *ruler / querier / query-frontend 会把正在执行的查询语句原样打进
+    =level=info= 日志*。Alloy 又采集 loki 命名空间的日志，于是任何「按内容匹配」的
+    规则都会匹配到自己的查询文本，形成自激环，*永久误报*。
+
+    实测： {namespace="loki"} |~ \=AccessDenied|...``  匹配 44 条，全是噪声。
+
+    *解法* ：Loki 组件日志一律以 =level= 开头，查询文本里的关键字永远不在行首，
+    因此用 =^level=error= 锚定即可精确区分。加锚定后 → 0 条。
+    跨命名空间的通用规则无法用这个锚定（各应用格式不同），改为直接排除 loki 命名空间。
+
+16. *Grafana 的 Loki 数据源不插值 =$__rate_interval=* （实测 Grafana 13.2.2），
+    会把字面量原样发给 Loki 并报
+    =parse error: not a valid duration string: \"$__rate_interval\"= 。
+    改用自定义的 interval 类型模板变量（本看板用 =$rate_window= ），由 Grafana 核心插值。
+
+17. *看板面板要用「存储在看板里的表达式」验证* ，不要自己另写一份替换后的查询去测——
+    我第一次就是手动把窗口换成 =[5m]= 再测，全绿，但看板里存的是 =$__rate_interval= ，实际全是报错。
+
+18. *不要用「日志量阈值」判断节点存活* 。空闲的 control-plane 节点实测一整小时
+    只产生 6~12 条日志，繁忙时段能到几千条，差三个数量级，任何固定阈值不是空闲误报
+    就是故障漏报。改为自校准的「上报节点数对比」（见告警规则注释）。
+
+    #+begin_quote
+    更深的教训：基线必须在*代表性时段*测。最初的阈值是在密集操作集群时测的，
+    集群一安静就立刻误报。
+    #+end_quote
+
+19. *告警阈值要按实测数据定，且基线要在代表性时段测* 。 =NodeLogShippingStalled= 先后错了两次：
+    最初「10 分钟窗口 < 5 条」——空闲节点实测最低 4 条，误报；
+    改成「30 分钟窗口 < 20 条」——那个基线是在密集操作集群时测的，集群一安静又误报。
+    最终放弃阈值，改用自校准的节点数对比。
+
+20. *把组件从 StatefulSet 改成 Deployment 时， =strategy= 里的 =partition= 是分组件的雷* 。
+    实测 chart 默认值：ingester / indexGateway 是 ={type: RollingUpdate}= （安全），
+    ruler 是 =None= （安全），但 *compactor 与 patternIngester 是 {rollingUpdate: {partition: 0}}* ，直接改 Deployment 会被 API schema 拒绝。
+    又因为 *Helm 对 map 是合并不是替换* ，只覆盖新值 =partition= 仍会残留，
+    必须显式写 =partition: null= 。
+
+21. *Deployment + =persistence.type: pvc= 会退化成所有副本共享一个 RWO PVC*
+    （chart =_pod.tpl:156=，固定名 =loki-data=）。ingester 有 3 副本，共享一个
+    RWO 卷起不来。所以改 Deployment 必须同时 =persistence.enabled: false=，
+    chart 会自动挂 emptyDir 到 =/var/loki=。
+
+22. *不要用「节点自身日志量」判断采集链路存活*。本集群空闲的 control-plane 节点
+    可以整整一小时零日志（master02/03 在 1h 窗口里根本不出现，3h 窗口才有 54 和 156 条）。
+    正确做法是用 *loki-canary 作为心跳源*：DaemonSet 每节点一个、持续写日志
+    （约 1168 条/小时/节点），加 control-plane 容忍覆盖全部节点，再比较
+    「15 分钟内有心跳的节点数」与「24 小时内出现过的节点数」。
+
+    #+begin_quote
+    选择器必须带 =node=~".+"=：修复 =__meta_kubernetes_pod_node_name= 之前采集的
+    历史日志没有 node 标签，=count by (node)= 会把它们算成一个「幽灵节点」，
+    导致 24h 侧恒定多一个而永久误报。
+    #+end_quote
+
+23. *Java 异常堆栈默认会被拆成多条记录*。容器日志按行采集，一个异常
+    十几行就是十几条独立记录（实测 NullPointerException 被拆成 10 条），
+    多副本并发时还会交错，排查时基本不可用。用 =stage.multiline= 合并。
+
+    *本项目不用 Pod 注解/标签做开关，而是对整条 pod 采集路径统一启用。*
+    早先用 =stage.match= + Pod 注解 =loki.io/multiline: "java"= 限定范围，
+    问题是新增 Java 服务必须记得加注解，漏了就悄悄退化成十几条。
+
+    改成全局的依据是实测数据：非 Java 服务（web-gateway / loki-ingester /
+    cilium-agent）的*原始日志*里不匹配 firstline 的行占比是 *0%*，
+    multiline 对它们是 no-op；两个 Java 服务是 42~43%，正好是堆栈。
+    详见「Alloy 采集端的配套改造」一节。
+
+    *但有一条硬约束：绝不能放在 =loki.process "common"= 里。*
+    systemd journal 的消息体 100% 不匹配时间戳行首，走公共路径会被糊成一坨。
+    必须放在 =loki.process "cri"=（pod 专用）里。
+
+    #+begin_quote
+    另一个代价：multiline 要等下一行或 =max_wait_time= 才能确定边界，
+    这个延迟加在*所有* Pod 日志上。高频服务几乎无感，但低频服务
+    （如 gateway-public-nginx，2 小时才 34 行）每条都要等满超时。
+    因此 =max_wait_time= 从 3s 下调到了 *1s*。
+    #+end_quote
+
+24. *Pod 的业务标签默认不会进 Loki*。Alloy 只映射你显式写在
+    =discovery.relabel= 里的标签。研发要按「服务」过滤就必须显式加
+    =app= 标签映射，否则只能用带 ReplicaSet 哈希的 =pod= 名。
+    映射时注意 =regex = "(.+)"=：默认 regex 是 =(.*)=，源标签为空时
+    也会匹配并把目标标签置成空值。
+
+25. *系统日志（journal）没有 namespace 标签，会在按命名空间筛选的面板里凭空消失*。
+    LogQL 的 =namespace=~".+"= 要求标签存在且非空，而 journal 日志本来就没有
+    namespace 概念。表现就是「Grafana 里死活找不到 kubelet 日志」。
+    解法是给它打一个占位值（本项目用 =namespace=_system=），让筛选器行为统一。
+
+26. *ConfigMap 热加载的延迟主要来自 kubelet，不是应用*。kubelet 把新内容写进
+    Pod 挂载卷是在 Pod 同步循环里做的（=syncFrequency= 默认 1m），
+    所以实测延迟在 *10~77 秒*之间大幅波动，取决于变更落在同步周期的哪个相位。
+    调应用侧的轮询间隔（如 =rulerConfig.poll_interval=）只能削掉次要的那一段。
+    要立即生效只能 =kubectl rollout restart=。
+
+27. *Grafana 级联变量必须注意 =templating.list= 的顺序*。变量的 =stream=
+    选择器只能引用排在它前面的变量，引用后面的会拿不到值（解析时尚未求值）。
+
+28. *一个容器里可能混着多种日志格式*。nginx-gateway-fabric 的数据面容器同时输出
+    nginx-agent 的 logfmt 和 JSON access log，直接 =| json= 会在前者上产生
+    =JSONParserErr=。要先用 =|~ = + 反引号 + =^\{= + 反引号 过滤出 JSON 行。
+    另外 init 容器也可能输出 JSON，用 =container="nginx"= 排除。
+
+29. *JSON 日志格式里，可能为空的变量必须加引号*。nginx 的 =$upstream_status= 等
+    变量在请求未走到上游时是空值，若在格式串里写成 ="upstream_status":$upstream_status=
+    会产生 ="upstream_status":,= 这种非法 JSON。只有 nginx 保证非空的变量
+    （=$status=/=$request_time= 等）才适合不加引号做成数字类型。
+
+30. *不要用 kubectl 手动改 Helm 管理的资源*。Helm 4 默认 server-side apply，手动改过的
+    字段会留下别的 field manager，下次 upgrade 报 conflict。要改就改 values。
+
+31. *LoadBalancer IP 在服务间移交时，Cilium agent 可能不编程新服务*。现象：svc 有
+    EXTERNAL-IP、endpoint 就绪，但 =cilium-dbg service list= 里没有，也没有 L2 lease。
+    *删除该 Service 再让 helm 重建即可*。
+
+32. *cilium agent 的 SA token 可能失效*，表现为 =cilium-dbg status= 报
+    =Kubernetes service is not ready: the server has asked for the client to provide credentials=，
+    日志里全是 =Unauthorized=。此时该节点 Pod 网络不通、L2 lease 续不了。
+    *重启对应的 cilium agent Pod 即可*。
+
+    #+begin_quote
+    这个故障可能长期潜伏：如果节点上只跑 hostNetwork 的 Pod，不会有任何症状。
+    #+end_quote
+
+33. *containerd 镜像源要靠 =config_path= 才生效，5 个节点必须一致。*
+    =/etc/containerd/certs.d/<registry>/hosts.toml= 只有在 =config.toml= 的
+    =[plugins.'io.containerd.cri.v1.images'.registry]= 段里 =config_path= 指向它时才会被读取。
+    本集群出现过 3 个 master 的 =config_path= 是空字符串、而 certs.d 内容与 worker
+    逐字节相同（md5 一致）的情况，表现为「配置明明一样，却只有 worker 能拉镜像」。
+
+    检查（5 台都要看，2026-09-30 已全部修正为一致）：
+
+    #+begin_src sh
+    for h in master01 master02 master03 node01 node02; do
+      echo -n "$h: "
+      ssh -o StrictHostKeyChecking=no $h.jasper.org \
+        "grep -A1 'cri.v1.images..registry\]' /etc/containerd/config.toml | grep config_path"
+    done
+    # 期望 5 行都是：config_path = '/etc/containerd/certs.d'
+    #+end_src
+
+    注意 =config.toml= 里有*不止一个* =config_path=（别的 plugin 段也有同名键，与镜像源无关），
+    只有 =io.containerd.cri.v1.images= 的 registry 段这一个管用。改的时候不要全局替换。
+
+    修复：把该段的 =config_path= 改成 =/etc/containerd/certs.d=，然后*必须重启 containerd*
+    （改 =hosts.toml= 不用重启，每次 pull 都会重读；只有改 =config.toml= 才要）。
+
+    #+begin_src sh
+    systemctl restart containerd
+    #+end_src
+
+    实测重启 containerd *不会杀掉运行中的容器*（shim 进程独立于 containerd）：
+    master01 重启前后 =crictl ps= 都是 11 个、master03 都是 10 个，
+    etcd / apiserver 的 RESTARTS 计数不变。即便如此仍建议一台一台做，*etcd leader 放最后*：
+
+    #+begin_src sh
+    # 先确认 etcd 健康、看清 leader 是谁（IS LEADER 列）
+    kubectl -n kube-system exec etcd-master01.jasper.org -- etcdctl \
+      --endpoints=https://127.0.0.1:2379 \
+      --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+      --cert=/etc/kubernetes/pki/etcd/server.crt \
+      --key=/etc/kubernetes/pki/etcd/server.key \
+      endpoint status --cluster -w table
+    #+end_src
+
+    *排查要点：看错误里的目标 IP。* 若是 =registry-1.docker.io= 的 IP，说明压根没走镜像源
+    （config_path 问题）；若是镜像站的 IP，才是镜像站本身的问题。光比对 hosts.toml
+    只会得出「配置一样为什么行为不同」的困惑。
+
+    #+begin_quote
+    =crictl info= *查不到*这个配置：containerd 2.x 的 CRI runtime 配置与 images 插件配置
+    是分开的，=crictl info= 的 =config= 段里根本没有 registry / configPath 字段。
+    只能读 config.toml，而「是否真正生效」只能由实际拉取行为证明。
+    #+end_quote
+
+    应急手段（镜像源确实不可达时）：从有缓存的节点导出再导入
+
+    #+begin_src sh
+    ctr -n k8s.io images export --platform linux/arm64 /tmp/img.tar docker.io/grafana/alloy:v1.20.0
+    scp /tmp/img.tar <target>:/tmp/
+    ssh <target> ctr -n k8s.io images import /tmp/img.tar
+    #+end_src
+
+34. *判断镜像源是否生效，看 containerd 日志里的 =trying next host= 计数，不要看耗时。*
+    耗时在这套环境里波动极大，单次测量不能当判据：同一台 node02、同一个
+    =redis:7.4-alpine=，两次拉取分别是 8s 和 93s；4 台并行拉同一个 48MB 镜像则是
+    15s / 83s / 111s / 294s，差 20 倍，期间还把 cilium-operator 挤重启了一次。
+    这个离散度*跟节点是 master 还是 worker 无关*——一直正常的 node02 也慢到 111s，
+    据此判断「某台机器有问题」必然误判。
+
+    #+begin_src sh
+    IMG=docker.io/library/alpine:3.20
+    since=$(date '+%Y-%m-%d %H:%M:%S')
+    crictl pull $IMG
+    journalctl -u containerd --since "$since" --no-pager | grep -c 'trying next host' || true
+    # 0 = 第一个源直接命中；>0 = 前面的源失败了，在往后退
+    # grep -c 数到 0 时退出码是 1，不代表命令出错，故加 || true
+    #+end_src
+
+    两个会把人带偏的信号：
+
+    - *=Image is up to date for sha256:...= 是 =crictl pull= 成功时的固定输出*，
+      不管有没有真的走网络都会打印，不能拿它判断是否命中缓存。
+    - *=crictl= 不是每台都装了。* 原先只有 master01 和 node01 有，
+      =crictl ... 2>&1 | wc -l= 会把 =command not found= 算成「1 个结果」。
+      （2026-09-30 已给 master02 / master03 / node02 补装 v1.37.0，5 台 md5 一致。）
+
+35. *Grafana 模板变量的 =allValue= 必须显式设成 =.+=。*
+    =includeAll: true= 而 =allValue= 留空时，Grafana 把 All 插值成 =.*=。
+    下游变量的级联查询往往*只有这一个 matcher*，于是变成 ={project=~".*"}=、
+    ={source=~".*"}=、={app=~".*"}=，Loki 一律拒绝：
+
+    #+begin_example
+    queries require at least one regexp or equality matcher
+    that does not have an empty-compatible value
+    #+end_example
+
+    实测四个看板的 8 个级联变量，=.*= 下*全部报错*、=.+= 下*全部正常*，
+    且没有任何取值因此丢失。=.+= 要求标签存在且非空，语义上正好是「全部」，
+    也和本栈的标签体系配套——系统日志的 =namespace=_system=、事件的
+    =node=_cluster= 这些占位就是为它准备的。
+
+    改的是各 =make-*.py= 里的 =lv()= 辅助函数，一处改完重新生成看板即可。
+
+36. *模板变量名不等于它要查的标签名。*
+    Gateway 看板的变量叫 =gateway=，但 Loki 里根本没有 =gateway= 这个标签，
+    要查的是 =app=。早先 =lv()= 把变量名同时当标签名用，结果
+    =label_values(gateway)= 返回 *={"status":"success"}= 但没有 =data= 字段*——
+    下拉框一直是空的，却不报任何错，极难发现。现在 =lv()= 有独立的
+    =label_name= 参数：
+
+    #+begin_src python
+    lv("gateway", "网关",
+       '{source="pod", container="nginx", app=~".+-nginx"}',
+       allv=True, label_name="app")
+    #+end_src
+
+    排查要点：*=label_values= 查一个不存在的标签，返回的是 success 而不是错误*，
+    要和「查到 0 个值」区分开，否则会把「变量查错了标签」误读成「这会儿没数据」。
+
+37. *看板「全部面板都是空的」，先怀疑变量残留，而不是采集断了。*
+    Grafana 把变量选择记在 URL 里（=?var-xxx=...=），*刷新页面不会恢复默认*。
+    级联变量之间因此可能进入互相矛盾的状态：Gateway 看板曾经有个 namespace 下拉，
+    候选级联自 ={app=~"$gateway"}=；在网关选 All 时候选里有 =loki=，
+    选中它之后再把网关切成 =gateway-public-nginx=（它在 =default=），
+    查询就成了 ={app=~"gateway-public-nginx", namespace=~"loki"}=——
+    13 个面板一起变空，而采集、数据、权限全都是好的。
+    （该变量已移除，就是为了根除这种矛盾状态。）
+
+    排查顺序，每一步都能独立证伪，别跳：
+
+    #+begin_src sh
+    # 1. 数据面到底有没有在产生日志（直接看容器，绕开 Loki）
+    kubectl logs -n default -l app.kubernetes.io/name=gateway-public-nginx -c nginx --tail=5
+
+    # 2. 日志有没有进 Loki（只用一个最宽的 matcher，别叠过滤条件）
+    lq /loki/api/v1/query_range --data-urlencode 'query={app="gateway-public-nginx"}'
+
+    # 3. 换成看板的完整选择器，看是哪一层过滤把数据滤没了
+    lq /loki/api/v1/query_range --data-urlencode 'query={app="gateway-public-nginx", container="nginx"} |~ `^\{` | json | status != ""'
+    #+end_src
+
+    第 2 步有数据、第 3 步没有 → 解析或过滤的问题；
+    两步都有数据 → 就是看板变量的问题，把下拉全部重置为 All。
+
+    刚发完请求就查第 2 步会是 0 条——Alloy 有几秒的批量缓冲，等 5~10 秒再查。
+    我自己就因为查得太快误判过一次「采集断了」。
+
+38. *把容器改成东八区：=TZ= 环境变量单独用是没用的。*
+    这些镜像都是 Alpine，*既没有 =/etc/localtime= 也没有 tzdata*
+    （ =/usr/share/zoneinfo/= 整个不存在）。只设 =TZ=Asia/Shanghai= ，
+    musl 找不到对应的 zoneinfo 文件，会*静默回退 UTC*——不报错，
+    看起来像设置没生效。
+
+    正确做法是把宿主机的时区文件挂进去，*并且不设 =TZ=*
+    （TZ 未设时 musl 直接读 =/etc/localtime=）：
+
+    #+begin_src yaml
+    volumes:
+    - name: tz-shanghai
+      hostPath:
+        path: /usr/share/zoneinfo/Asia/Shanghai   # 挂实际文件
+        type: File
+    volumeMounts:
+    - name: tz-shanghai
+      mountPath: /etc/localtime
+      readOnly: true
+    #+end_src
+
+    挂的是 =/usr/share/zoneinfo/Asia/Shanghai= 这个*实际文件*，不是宿主机的
+    =/etc/localtime=——后者是符号链接，hostPath 挂符号链接要额外处理解析。
+    五个节点都有这个文件（已实测）。
+
+    三个改动点各不相同：
+
+    | 对象                   | 改哪里                                                      |
+    |------------------------+-------------------------------------------------------------|
+    | =loki-gateway=         | Loki values 的 =gateway.extraVolumes= / =extraVolumeMounts= |
+    | =loki-read-gateway=    | Loki values =extraObjects= 里那段 Deployment                |
+    | =web-gateway=          | =java-demo.yaml=                                            |
+    | =gateway-public-nginx= | NGF values 的 =nginx.patches=，见下                         |
+
+    *NGF 数据面必须用 =JSONPatch=，不能用默认的 =StrategicMerge=。*
+    数据面 Deployment 由 NGF 控制器生成，只能通过 =nginx.patches= 改。
+    而 StrategicMerge 在这条路径上会*按索引覆盖*而不是按 name 合并——
+    只含一个元素的 =volumes= 会盖掉 =volumes[0]=（原本是 projected 类型的 token），
+    API Server 报 =may not specify more than 1 volume type=，
+    同时 =volumeMounts= 的引用全部错位，更新被拒、控制器反复重试报错：
+
+    #+begin_src yaml
+    nginx:
+      patches:
+      - type: JSONPatch        # "/-" = 追加到列表末尾，不碰现有元素
+        value:
+        - op: add
+          path: /spec/template/spec/volumes/-
+          value:
+            name: tz-shanghai
+            hostPath: {path: /usr/share/zoneinfo/Asia/Shanghai, type: File}
+        - op: add
+          path: /spec/template/spec/containers/0/volumeMounts/-
+          value: {name: tz-shanghai, mountPath: /etc/localtime, readOnly: true}
+    #+end_src
+
+    #+begin_quote
+    失败时服务不会中断：Deployment 更新被拒，旧 Pod 继续跑。
+    但控制器会一直重试报错，且后续任何 Gateway 变更都无法生效，必须尽快改对。
+    #+end_quote
+
+    *还要检查日志格式里有没有硬编码的时区偏移。* =web-gateway= 的日志生成脚本
+    原本是 =date '+%d/%b/%Y:%H:%M:%S +0000'=，=+0000= 是写死的字符串；
+    只挂时区文件的话，时间会变成北京时间*却仍标着 =+0000=*，自相矛盾。
+    改成 =%z= 让它自动跟随容器时区。
+
+    验证要同时看两样，只看一样会漏：
+
+    #+begin_src sh
+    kubectl exec -n default deploy/gateway-public-nginx -c nginx -- date   # 应含 CST
+    kubectl logs -n default deploy/gateway-public-nginx -c nginx --tail=5  # 应含 +08:00
+    #+end_src
+
+    注意两种 nginx 时间变量的偏移*写法不一样*，grep 的时候别看错：
+
+    | 变量            | 输出                         | 用在                                  |
+    |-----------------+------------------------------+---------------------------------------|
+    | =$time_iso8601= | =2026-09-30T10:52:41+08:00=  | NGF 数据面的 JSON access log          |
+    | =$time_local=   | =30/Sep/2026:10:50:02 +0800= | loki-gateway / 只读网关 / web-gateway |
+
+39. *改 Alloy 配置时， =alloy validate= 通过不等于能加载。*
+    validate 只校验 HCL 结构，*不解析 =stage.match= 里的 LogQL selector、
+    也不检查 template 语法*。我写了个反引号形式的行过滤器，validate 退出码 0，
+    一 reload 就炸：
+
+    #+begin_example
+    invalid stage config invalid selector syntax for match stage:
+    parse error at line 1, col 19: syntax error: unexpected IDENTIFIER, expecting STRING
+    #+end_example
+
+    *更麻烦的是 reload 失败时 Alloy 会静默回落到上一份配置继续跑* ——
+    Pod 是 Running、日志照采、={source="pod"}= 照样有数据，只有你的改动没生效。
+    所以改完必须查运行时日志，用 =/root/apply-alloy-config.sh= 而不是手动 apply：
+
+    #+begin_src sh
+    bash /root/loki-stack/alloy/apply-alloy-config.sh
+    #+end_src
+
+    这个脚本做了三件手动敲容易漏的事：锚定 =--since-time=、*逐个实例*检查、
+    把「成功」和「失败」分开统计。手动做的话最小是这样：
+
+    #+begin_src sh
+    T0=$(date -u +%Y-%m-%dT%H:%M:%SZ)      # 先记时刻
+    kubectl create cm alloy-config -n alloy --from-file=config.alloy=config.alloy \
+      --dry-run=client -o yaml | kubectl apply -f -
+    sleep 60
+    # 逐个实例查，不要用 ds/alloy —— 它只会挑其中一个 Pod（输出里会提示
+    # "Found 5 pods, using pod/alloy-xxxxx"），另外四个失败了你也看不见。
+    # label 用 instance=alloy：name=alloy 会把独立 release 的 alloy-events 也带进来。
+    for p in $(kubectl get pods -n alloy -l app.kubernetes.io/instance=alloy -o name); do
+      # 用变量接结果再判空：`grep | tail` 的退出码来自 tail（恒为 0），
+      # 写成 `grep ... || echo 无` 那个 || 永远不会触发
+      s=$(kubectl logs -n alloy "$p" -c alloy --since-time="$T0" 2>/dev/null \
+          | grep -oE "config reloaded|failed to reload config" | tail -1)
+      printf "  %-34s %s\n" "${p#pod/}" "${s:-（本次无记录）}"
+    done
+    #+end_src
+
+    #+begin_quote
+    *「本次无记录」不一定是坏事*：=kubectl apply= 在内容没变时是 =unchanged=，
+    不会触发 config-reloader，自然也就没有 reload 日志。
+    确认改动是否真的进去了，看 Pod 里挂载的那份：
+    =kubectl exec -n alloy ds/alloy -c alloy -- grep <你改的关键字> /etc/alloy/config.alloy=
+    #+end_quote
+
+    *=--since-time= 锚定到本次 apply 之后不能省。* 用 =--since=3m= 这种相对窗口，
+    会把上一次失败尝试的报错也捞进来，明明已经修好却一直显示失败——我在这上面
+    来回折腾了两轮。
+
+    另外两个具体语法坑：
+
+    - *=stage.match= 的 selector 里，LogQL 行过滤器只接受双引号字符串* ，
+      写反引号就是上面那个报错。注意这跟看板/命令行里的 LogQL 不一样，
+      那些地方反引号是合法的。
+      正确写法： selector = "{source=\"pod\"} |~ \"^\\\\{\""
+    - *=stage.json= 提取出来的数字，在 template 里是字符串不是 float64。*
+      用 =printf "%.0f" .status | atoi= 会失败得到 0，结果 404 被判成 info
+      （0 < 400）。用 sprig 的 =int=：={{ $s := .status | int }}=，
+      它对字符串和浮点都能转。
+
+40. *=| json= 之后做分位数/聚合，忘了 =by= 会让结果炸成几十条序列。*
+    =| json= 把*每一个 JSON 字段都变成 label*——包括 =request_id=、=remote_addr=、
+    =uri=、=time= 这些高基数字段。而 =quantile_over_time= / =count_over_time= 这类
+    range aggregation *不带 =by= 时按全部 label 分组*，于是几乎每条日志各成一条序列。
+
+    概览的「P95 响应时间」就踩了这个：写成
+
+    #+begin_src logql
+    quantile_over_time(0.95, <选择器> | unwrap request_time [5m])
+    #+end_src
+
+    实测返回 *35 条序列*，分组维度里赫然有 request_id / remote_addr / uri，
+    stat 面板于是显示一大堆数字。加 =by ()= 聚合掉所有标签才对：
+
+    #+begin_src logql
+    quantile_over_time(0.95, <选择器> | unwrap request_time [5m]) by ()
+    #+end_src
+
+    #+begin_quote
+    =max(...)= / =avg(...)= 也能把结果收成一条，但*语义不同*：
+    那是「多个流各自 P95 之后再取最大/平均」，不是全局 P95。
+    多个分位数求平均在统计上本来就是错的。要全局分位数就用 =by ()=。
+    #+end_quote
+
+    外层已有 =sum(...)= / =sum by (x) (...)= / =topk(...)= 的面板不受影响——
+    聚合已经把标签收口了。判断某个面板有没有这个毛病，看*实际返回的标签集
+    是否超出查询里声明的 =by (...)=*：超出就是漏了聚合。
+    =topk(10, sum by (uri) (...))= 按 uri 分组是面板的目的，不算。
+
+41. *=compress_responses= 在 =frontend= 段，不在 =server= 段——放错会让整个 Loki 起不来。*
+    我按直觉写进 =loki.server= ，helm upgrade 之后 *9 个组件全部 CrashLoopBackOff* ：
+
+    #+begin_example
+    failed parsing config: /etc/loki/config/config.yaml: yaml: unmarshal errors:
+      line 129: field compress_responses not found in type server.Config
+    #+end_example
+
+    Loki 对未知配置键是*硬失败*（不是忽略），任何一个拼错的键都会让所有组件
+    拒绝启动。正确位置：
+
+    #+begin_src yaml
+    loki:
+      frontend:
+        compress_responses: true
+    #+end_src
+
+    *怎么确认一个配置键该放哪* ：查运行中实例的 =/config= ，它输出的是完整配置树，
+    键的层级就是该写的层级：
+
+    #+begin_src sh
+    kubectl port-forward -n loki deploy/loki-querier 13180:3100 >/dev/null 2>&1 &
+    sleep 5
+    curl -s http://127.0.0.1:13180/config | grep -n "compress_responses"
+    kill %1
+    #+end_src
+
+    #+begin_quote
+    回滚很快： =cp values-distributed.yaml.bak-<时间戳> values-distributed.yaml=
+    再 =helm upgrade= ，实测 50 秒全部恢复 Running。每次改 values 前
+    patch 脚本都会自动留一份 =.bak-<时间戳>= ，就是为了这种时候。
+    #+end_quote
+
+42. *把资源从 helm values 里挪出来时，有两个坑会同时跳出来。*
+
+    背景：只读网关的 nginx.conf 原先内嵌在 values 的 =extraObjects= 里，
+    要改成独立 ConfigMap（这样改配置不用 helm upgrade）。
+
+    *坑一：YAML 锚点。* 那段 ConfigMap 里定义了 =labels: &id002= ，
+    而 Deployment 和 Service 的 5 处 =labels= / =matchLabels= / =selector=
+    都 =*id002= 引用它。直接删 ConfigMap 段 → =found undefined alias 'id002'= 。
+    要先把锚点 *展开* （各引用处填回实际内容），让 Deployment/Service 自包含，
+    再删。展开本身也是独立出去需要做的。
+
+    *坑二：解除 helm 归属并不能阻止删除。* 我以为把
+    =meta.helm.sh/release-name= 等 annotation 和 =managed-by= label 去掉，
+    helm 就不认它了——*结果 upgrade 照删不误*。Helm 对比新旧 manifest，
+    「旧有新无」就删，不看 ownership。
+
+    正确做法是在 *资源还在 values 里时* 先加上保留策略：
+
+    #+begin_src yaml
+    metadata:
+      annotations:
+        helm.sh/resource-policy: keep    # 告诉 helm：从 manifest 移除时别删
+    #+end_src
+
+    然后再 upgrade 一次、再从 values 移除。
+
+    #+begin_quote
+    我是走到一半才发现的：ConfigMap 被删了，但*服务没中断*——
+    已挂载的内容在运行中的 Pod 里保留着，kubelet 只是同步失败。
+    立刻用 =kubectl create cm ... | kubectl apply= 从 =parts/= 源文件重建即可。
+    真正的风险窗口是「ConfigMap 不存在时 Pod 恰好重启」。
+    #+end_quote
+
+43. *压测/造流量之后一定要清理干净，否则会被自己制造的故障误导。*
+    我用 =?echo_time=1200~2500= 造慢请求验证 P95 面板，脚本停了之后
+    NGF 数据面却持续异常： =readyz= 探针超时、Pod 变 *0/1 Running* 、
+    请求耗时 11 秒、大量 499。
+
+    差点归咎于刚加的 gzip，实际是*残留的 curl 子进程*还在打慢请求：
+    NGF 数据面只有 *2 个 worker* ，被慢请求占满后新请求全部排队，
+    而 readiness 探针的 =timeoutSeconds= 只有 *1 秒* ，一排队就判定不健康。
+    =proxy_read_timeout 300s= 又让这些连接释放得很慢。
+
+    清理时注意 *=pkill -f= 的模式会匹配到执行它的那条命令行本身* ——
+    你写 =pkill -f "curl.*echo.jasper.org"= ，这串字符就出现在自己的命令行里，
+    于是把自己（以及所在的 ssh 会话）一起杀掉，表现为 ssh 返回 255。
+    用字符类把模式和字面量错开：
+
+    #+begin_src sh
+    # 方括号让模式匹配 "echo.jasper.org"，但不匹配本行里的 "echo[.]jasper[.]org"
+    pkill -f "curl.*echo[.]jasper[.]org"
+    #+end_src
+
+    同一条命令行里 *不能再出现该字面量* （比如前面又 echo 了一遍要杀的模式），
+    否则照样自匹配。
+
+    清理后再测：中位 *2ms* ，10 次请求 0 次超过 1 秒，Pod 回到 1/1。
+
+    #+begin_quote
+    教训不只是「要清理」： *低 worker 数 + 严格探针超时* 的组合下，
+    一点点慢上游就能把整个入口拖成不健康。生产上线前值得按真实慢请求比例
+    压一轮，确认 worker 数和探针超时的配比扛得住。
+    #+end_quote
+
+44. *改了 Secret，Pod 不会自动重启。* =envFrom= 注入的环境变量是容器启动时读一次，
+    而更新 Secret 并不改变 Deployment 的 spec，=helm upgrade= 也不会触发滚动。
+
+    现象很有欺骗性： =kubectl get secret= 看到的是新值，Pod 全部 Running，
+    但进程里用的还是旧凭证——一直到你删掉旧凭证，整个栈才突然崩，
+    而那时你早已认为「凭证两周前就换好了」。
+
+    换凭证后 *必须显式 =kubectl rollout restart=* ，并且用
+    「Pod 启动时间晚于 Secret 创建时间」来验证，不能用「Pod 是 Running」。
+    命令见 =** S3 凭证轮换= 第 4 步。
+
+45. *=global.*= 已被 chart 标记 deprecated，而且注入面与 =defaults.*= 不同。*
+    =global.extraEnvFrom= 仍然生效（ =_pod.tpl= 把 global / defaults / 组件级
+    三个来源 concat 起来），但 *memcached 的模板只读 =global.extraEnvFrom=* 。
+
+    用 global 会把 S3 凭证额外注入给 chunks-cache / results-cache 两个
+    StatefulSet，而它们根本不连 S3。实测注入面 11/14（global）对 9/14（defaults）。
+    用 =defaults.extraEnvFrom= 。
+
+46. *Loki 的 =/config= 端点会回显配置里的凭证。* 凭证写在 values 里时，
+    port-forward 打 =/config= 就能看到明文 =access_key_id= ——而验证手册里
+    恰好有好几条要打这个端点。
+
+    改走 Secret + SDK 凭证链之后，该端点显示的是 =access_key_id: ""= ，
+    不再泄露，那几条验证命令可以放心用。这也是一个判断凭证是否真的外置了的
+    快速检查点。
+
+47. *按级别筛日志，不能用索引标签 =level= 。* 它看起来是最自然的选择——是索引标签，
+    能写进 ={}= 里直接选流，还快。但实测覆盖率只有 *4.8%* （4276/89069）：
+    Alloy 只给三类日志打了它——journal（由 priority 映射）、k8s 事件（由 type
+    映射）、网关 JSON 访问日志（由 HTTP 状态码映射）。
+    *绝大多数 Pod 日志根本没有这个标签。*
+
+    用 ={level=~"$level"}= 做看板过滤，会让 95% 的日志凭空消失，而界面上毫无提示，
+    看起来就像「采集断了」。和坑位 25（系统日志没有 namespace 标签会在按命名空间
+    筛选的面板里消失）是同一类问题。
+
+    改用 =detected_level= （Loki 服务端 =discover_log_levels= 打的结构化元数据），
+    覆盖 100%，并且把 journal 的 =warning= 与事件的 =warn= 归一成了同一个值。
+
+    #+begin_quote
+    代价有两条，排查时要先想到：① 它是结构化元数据不是标签，不能写进 ={}= ，
+    只能作为管道阶段 ~| detected_level=~"..."~ ；
+    ② =label_values(detected_level)= 返回空，所以 Grafana 变量必须是 custom
+    类型的固定列表——「级别下拉是空的」八成就是这个原因。
+    #+end_quote
+
+48. *把 Loki 的 instant 结果做成「名单」表格，必须用 labelsToFields + merge。*
+    Loki 数据源返回的是 *每个序列一个 frame* ，字段只有 =Time= 和 =Value= ，
+    标签挂在 field 的 =labels= 上， *不是独立的列* ：
+
+    #+begin_example
+    frames=20  fields=['Time', 'Value']
+    labels=[None, {'app':'cilium-agent','namespace':'kube-system','source':'pod'}]
+    #+end_example
+
+    所以直接在 =organize= 里按 =app= / =name= 改列名会 *静默失效* ——那些列
+    压根不存在。也试过给查询加 =format: "table"= （Prometheus 的写法），
+    Loki 不认，加与不加返回结构完全一样。正确的变换链，顺序不能动：
+
+    #+begin_example
+    labelsToFields  ->  merge  ->  organize  ->  sortBy
+    #+end_example
+
+    两个细节： =merge= 之后值字段叫 *=Value #A=* （带 refId 后缀）不是 =Value= ，
+    改名和排序都要按这个名字； =labelsToFields= 摊出来的列是标签名字母序，
+    要靠 =organize= 的 =indexByName= 显式排列。
+
+    #+begin_quote
+    *我先试过用 bargauge 绕开客户端变换，那是错的。* 实测它只画出
+    *一个无名的条* ，值是最后一个序列的（截图确认是 =web-gateway= 的 278），
+    完全不是名单。当时我以为"数据对、displayNameFromDS 也对，那渲染就没问题"——
+    这个推断不成立， *面板渲染必须真的看一眼* 。
+    #+end_quote
+
+49. *怎么在没有 image renderer 的情况下真的看见面板。* 这台 Grafana 没装渲染
+    插件（ =/render= 返回 500），而客户端变换、面板类型渲染这些东西在服务端
+    一概验证不到，只能看。
+
+    Chrome 无头会丢掉 URL 里的 =user:pass= ，直接截图只会得到登录页。
+    可行的办法是 *在本机起一个只转发到 Grafana 的小代理，由它补 Authorization 头* ，
+    Chrome 只访问 =127.0.0.1= ——全程不动对端任何配置：
+
+    #+begin_src sh
+    python3 grafana-shot.py loki-dev-troubleshoot 5 now-30m now /tmp/p5.png
+    #+end_src
+
+    脚本在 Mac 本地 =~/tmp/t3-pc/grafana-shot.py= 。关键参数是
+    =--virtual-time-budget=30000= ：Grafana 是单页应用，要留足时间加载并完成查询，
+    给少了会截到空面板。
+
+    #+begin_quote
+    另一个自己脚本里的坑：新面板插进 =panels= 之后再跑「其后面板统一下移」的
+    循环，新面板会把 *自己* 也移走——实测从 y=5 跑到 y=13，正好压在日志流上。
+    下移时必须排除刚插入的那个 id，并用「逐格检查重叠」验证布局。
+    #+end_quote
+
+50. *校验脚本的变量替换表要包含 Grafana 内置变量。* 我的看板查询校验脚本
+    只替换了自定义模板变量，漏了 =$__range= ，于是 4 个正常面板被报成
+    =not a valid duration string: "$__range"= 。 *假阳性比漏报更费时间* ——
+    会让人去改本来没问题的面板。内置变量至少要覆盖
+    =$__range= / =$__range_s= / =$__interval= 。
+
+51. *Grafana 的 row 是分隔符：顶层面板必须排在所有 row 之前。*
+    重构事件看板时我把折叠的「说明」行放在 =panels= 列表最前面，
+    后面跟着六个第一屏面板——结果 *那六个面板一个都不显示* ，
+    整屏只剩三个行标题。
+
+    原因是排在某个 row 之后的顶层面板会被算作属于该 row 的区段，
+    行一折叠就全跟着没了。说明行挪到列表末尾即可。
+
+    #+begin_quote
+    这个错误 *只有整屏截图才能发现* ：布局重叠检查 0 重叠、查询校验全绿、
+    面板 JSON 逐个看也都正常。单面板 d-solo 截图同样看不出来——
+    它绕过了 row 的归属逻辑。验证布局必须截整屏（ =grafana-shot.py <uid> full= ）。
+    #+end_quote
+
+    折叠行的子面板嵌在 =row["panels"]= 里而不是顶层，所以布局检查和查询校验
+    *都必须递归* ，只扫顶层会漏掉折叠行里的全部面板。
+
+52. *stat 面板的 =textMode: "name"= 在 instant 查询下不认 =displayNameFromDS= 。*
+    「最频繁故障原因」要显示 reason 名字而不是数值，用的是
+    =topk(1, sum by (reason) (...))= 配 =textMode: "name"= 。
+
+    数据完全正确—— =POST /api/ds/query= 查到 field 的
+    =config.displayNameFromDS= 就是 =Unhealthy= ——但面板显示成 *=Value #A=* 。
+    补 =reduceOptions.fields= / =values= 也没用。
+
+    *把查询从 instant 改成 range 就正常了。* 原因没深究；记住结论即可：
+    *stat 要显示序列名，就别用 instant 查询。*
+
+53. *LogQL 的 =| pattern= / =| json= 不会丢弃不匹配的行。* 它们只是不给那些行
+    打标签，行本身照样留在结果里。于是 =sum by (status) (...)= 会把所有
+    非 nginx 日志归进 *一个空标签序列* 。
+
+    研发看板的「HTTP 状态码分布」和「访问量 Top 10 路径」就栽在这里：
+    空标签那条 *34.7/s* ，而真实 nginx 数据只有 0.1~0.44/s—— *真实数据占 1.3%* ，
+    图上是一条压扁一切的直线加几条看不见的线。
+
+    解法是解析器后面跟一个非空过滤： =| status != ""= 。Gateway 看板的
+    =BASE= 一直有这条（ =| json | status != ""= ），研发看板漏了。
+
+    #+begin_quote
+    这个 bug 不会报错、不会 No data，面板看起来"有数据"，只是数据是错的。
+    排查时的判据： *返回的序列里有没有标签集为空的那一条* 。
+    #+end_quote
+
+54. *用 =$__interval= 做直方图，必须配面板级最小步长。*
+    日志量直方图想要"桶与桶严格相接"就得用 =$__interval= （= Grafana 的
+    step），用 =$rate_window= 会因为滑动窗口重叠糊成一整块实心色带。
+
+    但只写 =$__interval= 还不够：Grafana 对 30m 范围算出的 step 约 *1 秒* ，
+    每桶只有 1~4 条日志，画出来是一排密集栅栏，基线部分同样读不出趋势。
+    面板级加 =interval: "30s"= 设最小步长才对——实测 30m 范围下得到约 56 根柱，
+    基线 74 条/30s，异常尖峰 97 一眼可见。
+
+    #+begin_quote
+    顺带确认： =$__interval= 和 =$__range= 一样 *会* 被本 Grafana 的 Loki
+    数据源插值，只有 =$__rate_interval= 不会（坑位 1）。
+    #+end_quote
+
+55. *Loki 的 RE2 不支持负向先行断言，"除了 X 之外"只能用 =!~= 。*
+    想让「范围」下拉默认排除基础设施命名空间时，第一反应是给
+    =namespace=~= 写一个 =^(?!loki).*= ——RE2 直接拒绝。
+    正确写法是把变量值填进 *否定匹配* ： =namespace!~"$scope"= ，
+    「不排除」用 =^$= （所有真实命名空间都非空，所以等于不过滤）。
+
+    正则 *要锚定* ： =namespace!~"loki"= 是子串匹配，会把 =myloki= 一起排掉。
+
+56. *一张表里放多个指标，靠 =merge= 按共同标签列对齐多条查询。*
+    「接口使用情况」要同时显示请求数、错误率、P95——三条独立的 LogQL 查询，
+    按 =host+method+path= 合并成一张表。
+
+    做法是三个 target 用同一组 =sum by (...)= 标签，再走
+    =labelsToFields -> merge -> organize -> sortBy= 。 =merge= 会把标签列相同的
+    行并成一行，值列分别是 =Value #A= / =Value #B= / =Value #C= （带 refId 后缀），
+    =organize= 的改名和列序按这几个名字写。
+
+    #+begin_quote
+    做除法得到的那条查询（错误率）有 *两个流选择器* ，不能交给
+    =with_level()= 自动插级别过滤——它只处理第一个 ={}= 之后的位置。
+    要么手工把过滤拼进两边并传 =level=False= ，要么该面板放弃级别过滤。
+    #+end_quote
+
+57. *=label_format= 配 sprig 函数可以在查询时做字段归一化。*
+    访问日志的 =uri= 带查询串，接口排行表里每个 =?id=123= 都会单独占一行，
+    生产环境直接炸掉。LogQL 的 =label_format= 支持 Go 模板和 sprig 函数：
+
+    #+begin_src logql
+    | label_format path=`{{ regexReplaceAll "\\?.*$" .uri "" }}`
+    #+end_src
+
+    实测可用。这比在采集端改 nginx 日志格式灵活——原始 =uri= 还在，
+    想看带参数的排行随时能查。
+
+    #+begin_quote
+    同类用法：状态码分档（ ={{ printf "%sxx" (substr 0 1 .status) }}= ）、
+    路径里的 ID 替换成占位符（ =/users/123= → =/users/:id= ）。
+    高基数字段进聚合之前先归一化，是控制序列数的通用手段。
+    #+end_quote
+
+--------------
+
+** 配置热加载的耗时
+两处配置都是「改 ConfigMap 自动生效」，但耗时不同且有波动。实测数据：
+
+| 链路           | 实测耗时                  | 构成                                   |
+|----------------+---------------------------+----------------------------------------|
+| Alloy 采集配置 | 10 / 25 / 40 / 59 / 77 秒 | kubelet 传播 + 事件驱动 reload（约 0） |
+| Loki 告警规则  | 75 / 90 秒                | kubelet 传播 + 轮询等待（0~30 秒）     |
+
+*** 为什么波动这么大
+*大头是 kubelet 刷新 ConfigMap 卷，不是应用侧。*
+
+kubelet 的 =configMapAndSecretChangeDetectionStrategy= 默认是 =Watch=，
+API 侧的变更会立刻进 kubelet 缓存；但 *把新内容写进 Pod 里的挂载卷* 是在
+kubelet 的 Pod 同步循环里做的，周期由 =syncFrequency= 决定（默认 =1m=）。
+所以实际延迟取决于「变更落在同步周期的哪个位置」——刚好赶上就 10 秒，
+错过就要等将近一整个周期。
+
+上面 5 次 Alloy 的测量（10~77 秒）用的是同一套机制、同一个 Pod，
+差异全部来自这个相位。
+
+*** 两侧应用的处理方式不同
+- *Alloy*： =config-reloader= 边车用 =--watched-dir=/etc/alloy= 监听文件变化，
+  一旦文件变了立刻调用 =--reload-url=http://localhost:12345/-/reload= 。
+  *事件驱动，不额外增加延迟* 。
+- *Loki ruler* ：没有文件监听，靠 =poll_interval= 定时重扫规则目录。
+  默认 =1m= ，本项目已调到 *=30s=* （见 =loki.rulerConfig.poll_interval= ）。
+  所以它比 Alloy 多出 0~30 秒的轮询等待。
+
+*** 能控制到什么程度
+| 手段                             | 效果                                                                         | 代价                                                                                       |
+|----------------------------------+------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------|
+| 调低 =rulerConfig.poll_interval= | 只能削掉轮询那一段（最多 30 秒）                                             | 规则文件小，扫描开销可忽略                                                                 |
+| 调低 kubelet =syncFrequency=     | 能压缩大头，但要改*每个节点*的 =/var/lib/kubelet/config.yaml= 并重启 kubelet | 提高 API Server 负载，影响整个节点上所有 Pod，*不建议为此改*                               |
+| =kubectl rollout restart=        | *立刻生效*                                                                   | Pod 重启。Alloy 的 positions 在 emptyDir，重启后按 =max_age=1m= 重新开始，会有极短采集空档 |
+
+*结论*：正常改配置等 1~2 分钟即可；要立刻验证就用 rollout restart。
+
+#+begin_src sh
+kubectl rollout restart daemonset/alloy -n alloy      # 采集配置立即生效
+kubectl rollout restart deployment/loki-ruler -n loki # 告警规则立即生效
+#+end_src
+
+--------------
+
+** 如何修改配置
+*** 改 Alloy 采集配置（不需要 helm upgrade）
+配置已外置为 ConfigMap =alloy-config=，改完执行一条 kubectl 命令即可。
+*config-reloader 边车监听 =/etc/alloy= 并调用 Alloy 的 =/-/reload=，
+自动热加载，不重启 Pod*（实测 25 秒内生效，重启次数 0）：
+
+#+begin_src sh
+vi alloy/config.alloy
+
+# 建议先校验语法与组件参数，但注意 validate 通过不等于能加载（见坑位 39）
+kubectl create cm alloy-cfg-check -n default --from-file=config.alloy=alloy/config.alloy
+# ...用 alloy validate 跑一遍，确认无误后再 apply
+
+kubectl create configmap alloy-config -n alloy \
+  --from-file=config.alloy=alloy/config.alloy \
+  --dry-run=client -o yaml | kubectl apply -f -
+#+end_src
+
+确认生效：
+
+#+begin_src sh
+kubectl get pods -n alloy    # RESTARTS 应保持不变
+curl -s http://10.0.0.13:12345/-/ready
+#+end_src
+
+*** 改告警规则（不需要 helm upgrade）
+规则已外置为独立 ConfigMap =loki-alert-rules=，改完执行一条 kubectl 命令即可。
+*ruler 的 =poll_interval= 是 1 分钟，会自动重扫规则目录，不重启 pod*
+（实测 90 秒内生效，pod 重启次数 0）：
+
+#+begin_src sh
+vi loki/parts/loki-alerts.yaml
+
+kubectl create configmap loki-alert-rules -n loki \
+  --from-file=alerts.yaml=loki/parts/loki-alerts.yaml \
+  --dry-run=client -o yaml | kubectl apply -f -
+#+end_src
+
+约 1~2 分钟后确认：
+
+#+begin_src sh
+kubectl port-forward -n loki svc/loki-ruler 3110:3100 &
+curl -s -H 'X-Scope-OrgID: jasper' \
+  http://127.0.0.1:3110/prometheus/api/v1/rules \
+  | jq -r '.data.groups[].rules[] | "\(.name) \(.state) \(.health)"'
+#+end_src
+
+#+begin_quote
+挂载方式见 values 里的 =ruler.extraVolumes= / =ruler.extraVolumeMounts=，
+挂到 =/etc/loki/rules/jasper= （ =jasper= 是租户名，必须与 =X-Scope-OrgID= 一致）。
+
+*新建集群时要先创建这个 ConfigMap 再部署 Loki* ，否则 ruler 挂载失败起不来。
+#+end_quote
+
+*** 改只读网关
+改 =loki/parts/read-gateway-nginx.conf= ，然后重新内嵌进 values 并升级：
+
+#+begin_src sh
+helm upgrade loki ./loki/loki-18.13.5.tgz -n loki --values loki/values-distributed.yaml
+#+end_src
+
+*** 改看板
+#+begin_src sh
+vi grafana/make-dashboard.py && python3 grafana/make-dashboard.py
+#+end_src
+
+--------------
+
+** 常见排查
+| 现象                                           | 原因                                                                                                          | 处理                                                                       |
+|------------------------------------------------+---------------------------------------------------------------------------------------------------------------+----------------------------------------------------------------------------|
+| Grafana Logs 空白                              | 租户不匹配                                                                                                    | 核对数据源 header 值与 Alloy =tenant_id=                                   |
+| 401 =no org id=                                | 没带 =X-Scope-OrgID=                                                                                          | 数据源里补 header                                                          |
+| 查询成功但无数据                               | 该租户确实没数据                                                                                              | 查 Alloy 是否在跑、tenant_id 是否一致                                      |
+| 写入返回 403                                   | 走了只读网关                                                                                                  | 集群内应写 =loki-gateway.loki.svc.cluster.local=                           |
+| Pod 一直 Pending                               | 内存不足或反亲和无解                                                                                          | =kubectl describe pod= 看 FailedScheduling                                 |
+| PVC 一直 Pending                               | 没有默认 StorageClass                                                                                         | 做步骤 1                                                                   |
+| LB IP 不通                                     | Cilium 未编程/无 L2 lease                                                                                     | 见坑位 18                                                                  |
+| 某节点 Pod 网络不通                            | cilium agent token 失效                                                                                       | 见坑位 19                                                                  |
+| 告警一直 pending                               | 自激反馈环                                                                                                    | 见「告警规则的自激反馈环」一节                                             |
+| instant 查询报 =log queries are not supported= | 流选择器打了 =/query= 端点                                                                                    | 换成 =/query_range=，见「两个查询端点不要用混」                            |
+| 查询返回 ="result":[]=                         | 多半是那段时间真的没日志                                                                                      | 用 ={job="loki/canary"}= 做控制项，再把时间窗拉到 24h                      |
+| Grafana 变量下拉框是空的                       | 变量查的标签名不对（且不报错）                                                                                | 见坑位 36                                                                  |
+| 看板报 =empty-compatible value=                | 变量 =allValue= 没设成 =.+=                                                                                   | 见坑位 35                                                                  |
+| 按 =kubernetes-events= 筛却没数据              | 时间窗太短——本环境事件稀疏，30m 内经常真的是 0                                                                | 把时间范围往上调（6h/24h）。Loki 侧保留 168h，拉长一定查得到               |
+| alloy-events 日志里一大段 Go 堆栈              | *不是崩溃*：=[controller-runtime] log.SetLogger(...) was never called= 的一次性提示，它打印堆栈只为显示调用方 | 看 =RESTARTS= 是否为 0、Pod 是否 2/2；要确认采集是否还活着就造一个事件去探 |
+| ingester 启动报 empty ring                     | 启动期正常现象                                                                                                | 等 30 秒                                                                   |
+
+反查 Grafana 实际用的租户：
+
+#+begin_src sh
+kubectl logs -n loki -l app.kubernetes.io/component=query-frontend -f --tail=0 | grep org_id
+#+end_src

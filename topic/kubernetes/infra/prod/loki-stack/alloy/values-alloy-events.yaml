@@ -1,0 +1,60 @@
+# ==============================================================================
+# Grafana Alloy - Kubernetes Events 采集 (Deployment, 单副本)
+#
+# 为什么是独立的 release 而不是加进现有的 alloy DaemonSet：
+#   Events 是集群级资源，DaemonSet 的 5 个副本会各采一份，同一个事件进 Loki 5 条。
+#   独立单副本从根上没有这个问题，也不必碰运行良好的 DaemonSet。
+#
+# 输出: http://loki-gateway.loki.svc.cluster.local (集群内 ClusterIP)，租户 jasper
+# chart: alloy-1.13.0 / app: v1.20.0（与 DaemonSet 那套同一个 chart 包）
+#
+# 采集配置【不在本文件里】，由外部 ConfigMap `alloy-events-config` 提供，
+# 源文件是同目录的 config-events.alloy。修改流程：
+#
+#   vi config-events.alloy
+#   kubectl create cm alloy-events-config -n alloy \
+#     --from-file=config.alloy=config-events.alloy \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#
+# config-reloader 边车监听 /etc/alloy 并调用 Alloy 的 /-/reload，自动热加载。
+# ==============================================================================
+
+controller:
+  type: deployment
+  replicas: 1
+  # 跑在 master 上：三个 master 的内存请求只占 9~12%，而两个 worker 已到 43%/65%
+  tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+
+crds:
+  create: false
+
+# chart 按 release 名生成 alloy-events 这一套 SA/ClusterRole/Binding，
+# 与现有 alloy 的那套互不影响。events 的 get/list/watch 权限默认就包含。
+rbac:
+  create: true
+
+alloy:
+  # 只跟 API Server 打交道，不读宿主机文件：
+  # 既不用挂 /var/log，也不需要 runAsUser: 0
+  mounts:
+    varlog: false
+  resources:
+    requests:
+      cpu: 20m
+      memory: 96Mi
+    limits:
+      memory: 192Mi
+  configMap:
+    create: false
+    name: alloy-events-config
+    key: config.alloy
+
+# 不占用 Cilium LB IP 池的地址，调试用 kubectl port-forward 即可
+service:
+  enabled: true
+  type: ClusterIP

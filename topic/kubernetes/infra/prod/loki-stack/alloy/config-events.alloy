@@ -1,0 +1,110 @@
+// ============================================================================
+// Grafana Alloy 采集配置 —— Kubernetes Events
+//
+//   loki.source.kubernetes_events  ->  loki.relabel  ->  loki.process  ->  loki.write
+//
+// 为什么单独一个 Deployment 而不是并进 DaemonSet 的 config.alloy：
+//   Events 是集群级资源，DaemonSet 的 5 个副本会各采一份，同一个事件进 Loki 5 条。
+//
+// 本文件由外部 ConfigMap `alloy-events-config` 挂载，不在 Helm values 里。
+// 修改后：
+//   kubectl create cm alloy-events-config -n alloy \
+//     --from-file=config.alloy=config-events.alloy \
+//     --dry-run=client -o yaml | kubectl apply -f -
+// config-reloader 边车会自动触发热加载，不需要重启 Pod。
+// ============================================================================
+
+// Events 只在 etcd 里保留 1 小时（apiserver 未设 --event-ttl，取的默认值），
+// 过期就永久查不到。收进 Loki 才能事后追溯。
+//
+// namespaces 留空 = 监听全部命名空间。
+// 实测输出行是 logfmt，形如：
+//   name=<对象名> kind=Pod reason=Scheduled type=Normal sourcehost=<节点>
+//   reportingcontroller=kubelet msg="Successfully assigned ..."
+loki.source.kubernetes_events "cluster" {
+  job_name   = "kubernetes-events"
+  log_format = "logfmt"
+  forward_to = [loki.relabel.events.receiver]
+}
+
+loki.relabel "events" {
+  forward_to = [loki.process.events.receiver]
+
+  // ---- namespace 兜底 ----
+  // 集群级对象（Node、PersistentVolume 等）的事件没有 namespace，
+  // 而 Loki 不存储空值标签，这些事件就会完全没有 namespace 标签。
+  // 看板普遍用 namespace=~"$namespace" 过滤，LogQL 的 =~".+" 要求标签存在且非空，
+  // 不兜底的话这些事件会在所有按命名空间筛选的面板里凭空消失。
+  // （宿主机系统日志用 _system 占位是同一个道理，这里用 _cluster 表示「集群级」。）
+  rule {
+    source_labels = ["namespace"]
+    regex         = "^$"
+    target_label  = "namespace"
+    replacement   = "_cluster"
+  }
+
+  // Alloy 自动附加的 instance=loki.source.kubernetes_events.cluster 没有查询价值，
+  // 丢掉以免多一个无意义的索引标签
+  rule {
+    regex  = "instance"
+    action = "labeldrop"
+  }
+}
+
+loki.process "events" {
+  forward_to = [loki.write.default.receiver]
+
+  // 从 logfmt 行里取出两个字段。注意这里只是放进「提取映射」供后面的 stage 用，
+  // 不会自动变成标签——变成标签要显式经过 stage.labels。
+  stage.logfmt {
+    mapping = {
+      "evt_type"   = "type",
+      "sourcehost" = "",
+    }
+  }
+
+  // ---- level ----
+  // event 的 type 只有 Normal / Warning 两种，映射成现有体系里的 level，
+  // 这样 events 能直接接入按 level 筛选的面板。基数只有 2，很安全。
+  stage.template {
+    source   = "level"
+    template = "{{ if eq .evt_type \"Warning\" }}warn{{ else }}info{{ end }}"
+  }
+
+  // ---- node ----
+  // kubelet 报的事件带 sourcehost；scheduler / 各种 controller 报的事件是集群级的，
+  // 没有节点归属。和 namespace 同样的理由，空值要兜底，否则按节点筛选时会丢。
+  stage.template {
+    source   = "node"
+    template = "{{ if .sourcehost }}{{ .sourcehost }}{{ else }}_cluster{{ end }}"
+  }
+
+  stage.labels {
+    values = {
+      level = "",
+      node  = "",
+    }
+  }
+
+  // source 与现有的 pod / systemd 并列，构成第三类日志来源。
+  //
+  // app 给一个固定值而不是取 reportingcontroller：后者有十几种取值，
+  // 乘上 namespace 会把 stream 数抬高一个量级，而这套栈真正的风险是标签基数不是数据量。
+  // 想按报告者过滤用 `| logfmt | reportingcontroller="kubelet"`，走解析器不增加基数。
+  stage.static_labels {
+    values = {
+      source      = "kubernetes-events",
+      project     = "jp",
+      environment = "test",
+      app         = "kubernetes-events",
+    }
+  }
+}
+
+loki.write "default" {
+  endpoint {
+    // 与 DaemonSet 那套一致：走集群内 ClusterIP，不绕外部 LoadBalancer
+    url       = "http://loki-gateway.loki.svc.cluster.local/loki/api/v1/push"
+    tenant_id = "jasper"
+  }
+}
