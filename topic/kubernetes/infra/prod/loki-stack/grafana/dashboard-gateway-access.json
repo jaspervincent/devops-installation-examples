@@ -1281,11 +1281,11 @@
                 "type": "loki",
                 "uid": "efzm3ndgkowsga"
               },
-              "expr": "approx_topk(10, sum by (referer) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
+              "expr": "approx_topk(10, sum by (referer) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | label_format referer=`{{ if or (eq .referer \"\") (eq .referer \"-\") }}(直接访问){{ else }}{{ .referer }}{{ end }}` [$__range])))",
               "queryType": "instant"
             }
           ],
-          "description": "流量从哪来。直接访问时 referer 是 \"-\" 或空。用 approx_topk：这类字段在生产是无界的，普通 topk 的内层聚合会先 materialize 全部序列，超过 max_query_series 整条查询报错。代价是**结果为近似值**——排名可信，绝对数字别当精确值用。",
+          "description": "流量从哪来。**没有 Referer 头的请求显示成「(直接访问)」**——用户在地址栏直接敲 URL、从书签进来、或者 curl/脚本调用都是这种。不这么映射的话它是个空标签值，表格里就是一行空白，看着像查询出错（实测本环境 24h 占 99.5%，是最大的一行）。用 approx_topk：这类字段在生产是无界的，普通 topk 的内层聚合会先 materialize 全部序列，超过 max_query_series 整条查询报错。代价是**结果为近似值**——排名可信，绝对数字别当精确值用。",
           "options": {
             "showHeader": true,
             "cellHeight": "sm",
@@ -1371,11 +1371,11 @@
                 "type": "loki",
                 "uid": "efzm3ndgkowsga"
               },
-              "expr": "approx_topk(10, sum by (user_agent) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" [$__range])))",
+              "expr": "approx_topk(10, sum by (user_agent) (count_over_time({project=~\"$project\", environment=~\"$environment\", app=~\"$gateway\", container=\"nginx\", host=~\"$host\"} | detected_level=~\"$level\"  |~ `^\\{` | json | status != \"\" | label_format path=`{{ regexReplaceAll \"\\\\?.*$\" .uri \"\" }}` | status =~ \"$status\" |= \"$search\" | label_format user_agent=`{{ if or (eq .user_agent \"\") (eq .user_agent \"-\") }}(无 UA){{ else }}{{ .user_agent }}{{ end }}` [$__range])))",
               "queryType": "instant"
             }
           ],
-          "description": "人还是爬虫、什么浏览器/SDK。UA 基数可能很高，已 topk 封顶。",
+          "description": "人还是爬虫、什么浏览器/SDK。UA 基数可能很高，已 topk 封顶。不发 UA 的客户端（扫描器、裸 socket）显示成「(无 UA)」，理由同左边那张表：空标签值会渲染成一行空白。",
           "options": {
             "showHeader": true,
             "cellHeight": "sm",

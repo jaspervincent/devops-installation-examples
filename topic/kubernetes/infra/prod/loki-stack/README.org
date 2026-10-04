@@ -893,9 +893,25 @@ quantile_over_time(0.95, ... | unwrap request_time [5m]) by (host)
 | 第一屏 | 请求趋势（按状态码堆叠） + 按域名请求数                    |
 | 第一屏 | *接口使用情况表* ——域名 / 方法 / 接口 / 请求数 / 错误率 / P95 |
 | 折叠行 | 错误与慢请求：网关 vs 后端耗时 / 错误率趋势 / 4xx·5xx 原文 / 慢请求原文 |
-| 折叠行 | 流量来源与客户端：Top Referer / Top UA / Top 完整 URI      |
+| 折叠行 | 流量来源与客户端：Top Referer / Top UA / Top 完整 URI / Top 客户端 IP / Top 网段 |
 | 折叠行 | 原始日志（ =prettifyLogMessage= 开着，JSON 格式化展示）    |
 | 折叠行 | 说明 / 怎么读这个看板                                      |
+
+**** 「(直接访问)」和「(无 UA)」是什么
+这两张表里的兜底文案，不是某个客户端真的这么报的：
+
+| 显示         | 实际含义                                                 |
+|--------------+----------------------------------------------------------|
+| =(直接访问)= | 请求没有 =Referer= 头——地址栏直接敲、书签、curl/脚本调用 |
+| =(无 UA)=    | 请求没有 =User-Agent= 头——扫描器、裸 socket 客户端常见   |
+
+不映射的话它们是 *空标签值* ，表格里渲染成一整行空白，看着像面板坏了。
+本环境「直接访问」实测占 99.5%，是最大的一行。详见坑位 66。
+
+#+begin_quote
+=(无 UA)= 单独拎出来看是有安全价值的：正常浏览器和主流 SDK 都会发 UA，
+不发 UA 的请求量突然上涨，通常是在被扫。
+#+end_quote
 
 **** 接口使用情况表是核心
 业界（Apitally / Cloudflare / Apigee）都收敛到同一个构件： *一张按接口排名的表，
@@ -2935,6 +2951,42 @@ kubectl -n loki logs deploy/loki-ingester --since=2m | grep -ic accessdenied
     *教训更一般*：给看板造验证数据时，要造出**高基数**的那一面，
     不只是造出「有数据」。按真实接口画像造的流量能验证颜色阈值，
     但只有带随机参数的流量才能暴露基数问题。
+    #+end_quote
+
+66. *=sum by (字段)= 遇到空值会生成一个空标签序列，表格里就是一行空白。*
+    Gateway 看板的「Top 来源页 (Referer)」第一行什么都不显示、只有请求数——
+    *数据是对的，错的是展示* 。在地址栏直接敲 URL、从书签进入、或者
+    curl/脚本调用时浏览器不发 =Referer= 头，nginx 的 =escape: json= 把
+    =$http_referer= 记成空串， =sum by (referer)= 就把这批请求归到一个
+    *标签值为空* 的序列上。
+
+    #+begin_src sh
+    # 复现：空串那一行就是「直接访问」
+    lq /loki/api/v1/query --data-urlencode 'query=approx_topk(10, sum by (referer) (count_over_time({project=~".+", environment=~".+", app=~".+-nginx", container="nginx"} |~ `^\{` | json | status != "" [1h])))'
+    #+end_src
+
+    本环境实测 24h = 2380/2391 = *99.5%* 都是这一类——占比最大的那一行
+    反而最没信息，读起来像查询炸了或数据缺失。
+
+    修法是在聚合 *之前* 用 =label_format= 把空值映射成可读文案
+    （下面是 LogQL 片段，不是 shell 命令；接在基础选择器 =SEL= 之后、
+    =count_over_time= 的方括号之前）：
+
+    #+begin_example
+    | label_format referer=`{{ if or (eq .referer "") (eq .referer "-") }}(直接访问){{ else }}{{ .referer }}{{ end }}`
+    #+end_example
+
+    =""= 和 =-= 都兜住： =escape: json= 对缺失变量输出空串，不开时输出 =-= ，
+    将来改日志格式不用回来改看板。
+
+    #+begin_quote
+    *不要用 =| referer != ""= 过滤掉它* 。「有多少流量是直接访问的」本身
+    就是业务信息，直接丢掉等于把最大的一块数据藏起来。
+    同类字段（ =user_agent= 、 =x_forwarded_for= ）都该先想兜底文案，
+    再想过滤——这和 =$host= 那一节「控制基数不等于丢弃信息」是同一条原则。
+
+    这个缺陷 *查询校验发现不了* （查询完全正确、返回两条序列），
+    只有截图或者真的去看一眼面板才能发现。
     #+end_quote
 
 65. *表格高度要按「查询可能返回多少行」定，不是按「当下有多少行」定。*

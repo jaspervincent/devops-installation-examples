@@ -382,6 +382,24 @@ CLIENT = ('| label_format client=`{{ regexReplaceAll ",.*$" '
 SUBNET = ('| label_format subnet=`{{ printf "%s.0/24" '
           '(regexReplaceAll "[.][0-9]+$" .client "") }}`')
 
+# 空标签值的兜底文案。
+#
+# `sum by (referer)` 对「referer 为空」的那批请求会生成一个标签值是空串的
+# 序列，表格渲染出来就是一行**空白**——看着像查询出错或数据缺失，实际语义是
+# 「用户直接访问，浏览器没发 Referer 头」。本环境实测 24h 2380/2391 都是这类，
+# 占 99.5%，恰恰是最该标清楚的一行。
+#
+# 不用过滤（`| referer != ""`）把它丢掉：直接访问的占比本身就是业务信息。
+# nginx 的 escape=json 对缺失变量输出空串；不开 escape=json 时是 "-"，
+# 两种都兜住，换格式不用回来改。
+REFERER = ('| label_format referer=`{{ if or (eq .referer "") (eq .referer "-") }}'
+           '(直接访问){{ else }}{{ .referer }}{{ end }}`')
+
+# UA 同理。本环境暂时没有空 UA，但扫描器和裸 socket 客户端经常不发，
+# 一出现就是同样的空白行。
+UA = ('| label_format user_agent=`{{ if or (eq .user_agent "") (eq .user_agent "-") }}'
+      '(无 UA){{ else }}{{ .user_agent }}{{ end }}`')
+
 # 状态码分档：200 -> 2xx。用 regexReplaceAll 把末两位换成 xx——
 # 不用 sprig 的 substr，因为 LogQL 的模板函数表不是 sprig 全集
 # （regexFind 就不存在，见坑位 58），只用已验证可用的。
@@ -520,9 +538,12 @@ panels = [
     row(400, "流量来源与客户端", 21, collapsed=True, children=[
         panel(30, "Top 来源页 (Referer)", "table",
               {"h": 8, "w": 12, "x": 0, "y": 22},
-              [tgt('approx_topk(10, sum by (referer) (count_over_time(%s [%s])))'
-                   % (SEL, RANGE_W), None, qtype="instant")],
-              "流量从哪来。直接访问时 referer 是 \"-\" 或空。"
+              [tgt('approx_topk(10, sum by (referer) (count_over_time(%s %s [%s])))'
+                   % (SEL, REFERER, RANGE_W), None, qtype="instant")],
+              "流量从哪来。**没有 Referer 头的请求显示成「(直接访问)」**——"
+              "用户在地址栏直接敲 URL、从书签进来、或者 curl/脚本调用都是这种。"
+              "不这么映射的话它是个空标签值，表格里就是一行空白，"
+              "看着像查询出错（实测本环境 24h 占 99.5%，是最大的一行）。"
               "用 approx_topk：这类字段在生产是无界的，普通 topk 的内层聚合"
               "会先 materialize 全部序列，超过 max_query_series 整条查询报错。"
               "代价是**结果为近似值**——排名可信，绝对数字别当精确值用。",
@@ -530,9 +551,11 @@ panels = [
 
         panel(31, "Top 客户端类型 (UA)", "table",
               {"h": 8, "w": 12, "x": 12, "y": 22},
-              [tgt('approx_topk(10, sum by (user_agent) (count_over_time(%s [%s])))'
-                   % (SEL, RANGE_W), None, qtype="instant")],
-              "人还是爬虫、什么浏览器/SDK。UA 基数可能很高，已 topk 封顶。",
+              [tgt('approx_topk(10, sum by (user_agent) (count_over_time(%s %s [%s])))'
+                   % (SEL, UA, RANGE_W), None, qtype="instant")],
+              "人还是爬虫、什么浏览器/SDK。UA 基数可能很高，已 topk 封顶。"
+              "不发 UA 的客户端（扫描器、裸 socket）显示成「(无 UA)」，"
+              "理由同左边那张表：空标签值会渲染成一行空白。",
               table1("请求数", {"user_agent": "User-Agent"}, ["user_agent"])),
 
         # ---- 客户端 IP：个人数据，合规场景下可整个删掉 ----

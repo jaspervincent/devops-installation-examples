@@ -64,10 +64,18 @@ def main():
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
-    url = ("http://127.0.0.1:%d/d-solo/%s/x?panelId=%s&from=%s&to=%s&theme=light"
-           % (PORT, uid, pid, frm, to))
+    # pid="full" 截整个看板（kiosk 模式去掉导航），用来验证布局和第一屏观感；
+    # 给具体 panelId 则走 d-solo 单面板。
+    if pid == "full":
+        url = ("http://127.0.0.1:%d/d/%s/x?from=%s&to=%s&theme=light&kiosk"
+               % (PORT, uid, frm, to))
+        size = "1500,1500"
+    else:
+        url = ("http://127.0.0.1:%d/d-solo/%s/x?panelId=%s&from=%s&to=%s&theme=light"
+               % (PORT, uid, pid, frm, to))
+        size = "1500,560"
     subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars",
-                    "--window-size=1500,560", "--virtual-time-budget=30000",
+                    "--window-size=" + size, "--virtual-time-budget=30000",
                     "--screenshot=" + out, url],
                    capture_output=True, text=True)
     srv.shutdown()
