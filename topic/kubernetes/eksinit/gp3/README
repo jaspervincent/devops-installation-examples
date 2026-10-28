@@ -1,0 +1,5 @@
+# Change the default storage class
+# https://kubernetes.io/docs/tasks/administer-cluster/change-default-storage-class/
+kubectl apply -f gp3.yaml
+kubectl patch storageclass gp2 -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'
+

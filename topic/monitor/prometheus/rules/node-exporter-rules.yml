@@ -1,0 +1,262 @@
+groups:
+  - name: 主机监控（资源标签）
+    interval: 30s
+    rules:
+      - alert: 主机不可用
+        expr: up{job="node-exporter"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "主机不可用"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的 Node Exporter 已连续 3 分钟无法被 Prometheus 抓取。"
+
+      - alert: 主机CPU使用率过高
+        expr: |
+          100 - (
+            avg without (cpu, mode) (
+              rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[5m])
+            ) * 100
+          ) > 80
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机 CPU 使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的 CPU 使用率已连续 10 分钟超过 80%，当前={{ $value | printf \"%.2f\" }}%。"
+
+      - alert: 主机CPU的IO等待过高
+        expr: |
+          avg without (cpu) (
+            rate(node_cpu_seconds_total{job="node-exporter",mode="iowait"}[5m])
+          ) > 0.30
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机 CPU I/O wait 过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的 CPU I/O wait 已连续 10 分钟超过 30%，当前={{ $value | humanizePercentage }}。"
+
+      - alert: 主机可用内存不足
+        expr: node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"} < 0.01
+        for: 10m
+        #expr: node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"} < 0.1
+        #for: 1m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机可用内存不足"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的可用内存已连续 10 分钟低于 1%，当前剩余={{ $value | humanizePercentage }}。"
+
+      - alert: 主机磁盘可用空间不足
+        expr: |
+          (
+            node_filesystem_avail_bytes{job="node-exporter",
+              fstype!~"^(autofs|binfmt_misc|cgroup2?|configfs|debugfs|devpts|devtmpfs|fuse.*|hugetlbfs|mqueue|nfs.*|overlay|proc|pstore|securityfs|squashfs|sysfs|tmpfs|tracefs)$"
+            }
+            / node_filesystem_size_bytes{job="node-exporter"}
+          ) < 0.10
+          and on (project, resource_id, instance, device, mountpoint)
+          (node_filesystem_readonly{job="node-exporter"} == 0)
+        for: 10m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "主机文件系统可用空间不足"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的 {{ $labels.mountpoint }} 可用空间已连续 10 分钟低于 10%，当前剩余={{ $value | humanizePercentage }}。"
+
+      - alert: 主机可用Inode不足
+        expr: |
+          (
+            node_filesystem_files_free{job="node-exporter"} / node_filesystem_files{job="node-exporter"} < 0.10
+          )
+          and on (project, resource_id, instance, device, mountpoint)
+          (node_filesystem_readonly{job="node-exporter"} == 0)
+          and node_filesystem_files{job="node-exporter"} > 0
+        for: 10m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "主机文件系统 inode 不足"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的 {{ $labels.mountpoint }} 可用 inode 已连续 10 分钟低于 10%，当前剩余={{ $value | humanizePercentage }}。"
+
+      - alert: 主机磁盘预计一天内写满
+        expr: |
+          predict_linear(
+            node_filesystem_avail_bytes{job="node-exporter",
+              fstype!~"^(autofs|binfmt_misc|cgroup2?|configfs|debugfs|devpts|devtmpfs|fuse.*|hugetlbfs|mqueue|nfs.*|overlay|proc|pstore|securityfs|squashfs|sysfs|tmpfs|tracefs)$"
+            }[6h],
+            24 * 3600
+          ) < 0
+          and deriv(node_filesystem_avail_bytes{job="node-exporter"}[6h]) < 0
+          and
+          (
+            node_filesystem_avail_bytes{job="node-exporter"} / node_filesystem_size_bytes{job="node-exporter"} < 0.40
+          )
+          and on (project, resource_id, instance, device, mountpoint)
+          (node_filesystem_readonly{job="node-exporter"} == 0)
+        for: 30m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机磁盘预计 24 小时内写满"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的 {{ $labels.mountpoint }} 按照最近 6 小时趋势，预计在 24 小时内耗尽空间。"
+
+      - alert: 主机磁盘IO队列过深
+        expr: rate(node_disk_io_time_weighted_seconds_total{job="node-exporter",device!~"^(loop|ram|fd|sr|dm-)[0-9]+$"}[5m]) > 10
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机磁盘 I/O 队列过深"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的磁盘 {{ $labels.device }} 平均 I/O 队列深度已连续 10 分钟超过 10，当前={{ $value | printf \"%.2f\" }}。"
+          runbook_url: "https://runbooks.prometheus-operator.dev/runbooks/node/nodediskiosaturation"
+
+      - alert: 主机网络接收带宽使用率过高
+        expr: |
+          rate(node_network_receive_bytes_total{job="node-exporter",device!~"^(lo|veth.*|cali.*|flannel.*|cni.*)$"}[5m])
+          / node_network_speed_bytes{job="node-exporter"} > 0.80
+          and node_network_speed_bytes{job="node-exporter"} > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机网络接收带宽使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的网卡 {{ $labels.device }} 接收带宽已连续 10 分钟超过标称速率的 80%，当前={{ $value | humanizePercentage }}。"
+
+      - alert: 主机网络发送带宽使用率过高
+        expr: |
+          rate(node_network_transmit_bytes_total{job="node-exporter",device!~"^(lo|veth.*|cali.*|flannel.*|cni.*)$"}[5m])
+          / node_network_speed_bytes{job="node-exporter"} > 0.80
+          and node_network_speed_bytes{job="node-exporter"} > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机网络发送带宽使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的网卡 {{ $labels.device }} 发送带宽已连续 10 分钟超过标称速率的 80%，当前={{ $value | humanizePercentage }}。"
+
+      - alert: 主机每核负载过高
+        expr: |
+          node_load1{job="node-exporter"}
+          / count without (cpu, mode) (
+            node_cpu_seconds_total{job="node-exporter",mode="idle"}
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机每核负载过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的每核 1 分钟负载已连续 10 分钟超过 2，当前={{ $value | printf \"%.2f\" }}。"
+
+      - alert: 主机发生OOM终止进程
+        expr: increase(node_vmstat_oom_kill{job="node-exporter"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机发生 OOM Kill"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 最近 5 分钟发生 OOM Kill，次数={{ $value | printf \"%.0f\" }}。"
+
+     #- alert: 主机上下文切换率异常升高
+     #   expr: |
+     #     (
+     #       rate(node_context_switches_total{job="node-exporter"}[15m])
+     #       / count without (mode, cpu) (node_cpu_seconds_total{job="node-exporter",mode="idle"})
+     #     )
+     #     /
+     #     (
+     #       rate(node_context_switches_total{job="node-exporter"}[1d])
+     #       / count without (mode, cpu) (node_cpu_seconds_total{job="node-exporter",mode="idle"})
+     #     ) > 2
+     #     and rate(node_context_switches_total{job="node-exporter"}[1d]) > 0
+     #   for: 15m
+     #   labels:
+     #     severity: warning
+     #     team: ops
+     #   annotations:
+     #     summary: "主机上下文切换率异常升高"
+     #     description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 最近 15 分钟的每核上下文切换率已连续 15 分钟超过过去一天平均值的 2 倍，当前倍数={{ $value | printf \"%.2f\" }}。"
+
+
+      - alert: 主机时钟偏差过大
+        expr: |
+          (
+            node_timex_offset_seconds{job="node-exporter"} > 0.05
+            and deriv(node_timex_offset_seconds{job="node-exporter"}[5m]) >= 0
+          )
+          or
+          (
+            node_timex_offset_seconds{job="node-exporter"} < -0.05
+            and deriv(node_timex_offset_seconds{job="node-exporter"}[5m]) <= 0
+          )
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机时钟偏差"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的时钟偏差持续超过 50ms，当前偏差={{ $value | humanizeDuration }}。请检查 NTP/chrony。"
+
+#      - alert: 主机时钟未同步
+#        expr: |
+#          min_over_time(node_timex_sync_status{job="node-exporter"}[3m]) == 0
+#          and node_timex_maxerror_seconds{job="node-exporter"} >= 16
+#        for: 5m
+#        labels:
+#          severity: warning
+#          team: ops
+#        annotations:
+#          summary: "主机时钟未同步"
+#          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的时钟未同步。请检查 NTP/chrony 服务和上游时间源。"
+
+      - alert: 主机文件系统设备错误
+        expr: |
+          node_filesystem_device_error{job="node-exporter",
+            fstype!~"^(autofs|binfmt_misc|cgroup2?|configfs|debugfs|devpts|devtmpfs|fuse.*|hugetlbfs|mqueue|nfs.*|overlay|proc|pstore|securityfs|squashfs|sysfs|tmpfs|tracefs)$"
+          } == 1
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "主机文件系统设备错误"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 对挂载点 {{ $labels.mountpoint }} 执行 stat 操作时持续报错。"
+
+      - alert: 主机磁盘读取延迟过高
+        expr: |
+          rate(node_disk_read_time_seconds_total{job="node-exporter",device!~"^(loop|ram|fd|sr|dm-)[0-9]+$"}[5m])
+          / rate(node_disk_reads_completed_total{job="node-exporter"}[5m]) > 0.1
+          and rate(node_disk_reads_completed_total{job="node-exporter"}[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机磁盘读取延迟过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的磁盘 {{ $labels.device }} 平均读取延迟已连续 10 分钟超过 100ms，当前={{ $value | humanizeDuration }}。"
+
+      - alert: 主机磁盘写入延迟过高
+        expr: |
+          rate(node_disk_write_time_seconds_total{job="node-exporter",device!~"^(loop|ram|fd|sr|dm-)[0-9]+$"}[5m])
+          / rate(node_disk_writes_completed_total{job="node-exporter"}[5m]) > 0.1
+          and rate(node_disk_writes_completed_total{job="node-exporter"}[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "主机磁盘写入延迟过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.resource_name }} ({{ $labels.resource_id }}) 的磁盘 {{ $labels.device }} 平均写入延迟已连续 10 分钟超过 100ms，当前={{ $value | humanizeDuration }}。"

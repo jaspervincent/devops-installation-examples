@@ -1,0 +1,267 @@
+#https://artifacthub.io/packages/helm/prometheus-community/prometheus-cloudwatch-exporter
+# Source: prometheus-cloudwatch-exporter/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+automountServiceAccountToken: true
+metadata:
+  name: cloudwatch-prometheus-cloudwatch-exporter
+  namespace: monitoring
+  labels:
+    app: prometheus-cloudwatch-exporter
+    chart: prometheus-cloudwatch-exporter-0.25.3
+    release: "cloudwatch"
+    heritage: "Helm"
+---
+# Source: prometheus-cloudwatch-exporter/templates/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudwatch-prometheus-cloudwatch-exporter
+  namespace: monitoring
+  labels:
+    app: prometheus-cloudwatch-exporter
+    chart: prometheus-cloudwatch-exporter-0.25.3
+    heritage: Helm
+    release: cloudwatch
+type: Opaque
+data:
+  
+  aws_access_key_id: "QUtxE="
+  
+  
+  aws_secret_access_key: "eHxVQg=="
+---
+# Source: prometheus-cloudwatch-exporter/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudwatch-prometheus-cloudwatch-exporter
+  namespace: monitoring
+  labels:
+    app: prometheus-cloudwatch-exporter
+    chart: prometheus-cloudwatch-exporter-0.25.3
+    release: cloudwatch
+    heritage: Helm
+data:
+  config.yml: |
+    
+    # This is the default configuration for prometheus-cloudwatch-exporter
+    region: us-west-2
+    period_seconds: 240
+    metrics:
+    - aws_namespace: AWS/ElastiCache
+      aws_metric_name: CPUUtilization
+      aws_dimensions: [CacheClusterId]
+      aws_tag_select:
+        tag_selections:
+          Owner: ["ciciname.t"]
+        resource_type_selection: elasticache
+        resource_id_dimension: Tags
+      aws_statistics: [Minimum,Maximum,Average]
+    
+    - aws_namespace: AWS/ElastiCache
+      aws_metric_name: EngineCPUUtilization
+      aws_dimensions: [CacheClusterId]
+      aws_dimension_select_regex:
+        cache_cluster_id: ["test-.*"]
+      aws_statistics: [Minimum,Maximum,Average]
+    
+---
+# Source: prometheus-cloudwatch-exporter/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cloudwatch-prometheus-cloudwatch-exporter
+  labels:
+    app: prometheus-cloudwatch-exporter
+    chart: prometheus-cloudwatch-exporter-0.25.3
+    release: cloudwatch
+    heritage: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["secrets","configmap"]
+    resourceNames: ["cloudwatch-prometheus-cloudwatch-exporter"]
+    verbs: ["get"]
+---
+# Source: prometheus-cloudwatch-exporter/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cloudwatch-prometheus-cloudwatch-exporter
+  labels:
+    app: prometheus-cloudwatch-exporter
+    chart: prometheus-cloudwatch-exporter-0.25.3
+    release: cloudwatch
+    heritage: Helm
+subjects:
+  - kind: ServiceAccount
+    name: cloudwatch-prometheus-cloudwatch-exporter
+    namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: cloudwatch-prometheus-cloudwatch-exporter
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: prometheus-cloudwatch-exporter/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloudwatch-prometheus-cloudwatch-exporter
+  namespace: monitoring
+  annotations:
+    {}
+  labels:
+    app: prometheus-cloudwatch-exporter
+    chart: prometheus-cloudwatch-exporter-0.25.3
+    release: cloudwatch
+    heritage: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9106
+      targetPort: container-port
+      protocol: TCP
+      name: http
+  selector:
+    app: prometheus-cloudwatch-exporter
+    release: cloudwatch
+---
+# Source: prometheus-cloudwatch-exporter/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudwatch-prometheus-cloudwatch-exporter
+  namespace: monitoring
+  labels:
+    app: prometheus-cloudwatch-exporter
+    chart: prometheus-cloudwatch-exporter-0.25.3
+    release: cloudwatch
+    heritage: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-cloudwatch-exporter
+      release: cloudwatch
+  template:
+    metadata:
+      labels:
+        app: prometheus-cloudwatch-exporter
+        release: cloudwatch
+      annotations:
+      annotations:
+       # prometheus.io/path: "/metrics"
+       # prometheus.io/port: "9106"
+       # prometheus.io/scrape: "true"
+        checksum/config: 457699c536e9bc13c9788b1a8916aa75edaac01211284f245b4639cbb23ae489
+        checksum/secrets: ca7590b71bd346f12a27d977905927f4149077cfa9903cb65df4e088d06a62a6
+    spec:
+      containers:
+      - name: prometheus-cloudwatch-exporter
+        env:
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                key: aws_access_key_id
+                name: cloudwatch-prometheus-cloudwatch-exporter
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                key: aws_secret_access_key
+                name: cloudwatch-prometheus-cloudwatch-exporter
+        image: "prom/cloudwatch-exporter:v0.15.5"
+        imagePullPolicy: IfNotPresent
+        ports:
+          - name: container-port
+            containerPort: 9106
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: container-port
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: container-port
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        resources:
+          {}
+        volumeMounts:
+          - name: vol-prometheus-cloudwatch-exporter
+            mountPath: /config
+      - args:
+        - --webhook-url=http://localhost:9106/-/reload
+        - --volume-dir=/config/
+        image: ghcr.io/jimmidyson/configmap-reload:v0.13.0
+        name: module-configmap-reloader
+        resources:
+          limits:
+            cpu: 20m
+            memory: 40Mi
+          requests:
+            cpu: 10m
+            memory: 20Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsGroup: 65534
+          runAsNonRoot: true
+          runAsUser: 65534
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: FallbackToLogsOnError
+        volumeMounts:
+        - mountPath: /config
+          name: vol-prometheus-cloudwatch-exporter
+          readOnly: true
+      securityContext:
+        fsGroup: 65534
+        runAsUser: 65534
+      serviceAccount: cloudwatch-prometheus-cloudwatch-exporter
+      serviceAccountName: cloudwatch-prometheus-cloudwatch-exporter
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: cloudwatch-prometheus-cloudwatch-exporter
+        name: vol-prometheus-cloudwatch-exporter
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cloudwatch-prometheus-cloudwatch-exporter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus-cloudwatch-exporter
+    app.kubernetes.io/instance: prometheus-cloudwath-exporter
+    app.kubernetes.io/version: "0.25.3"
+    app.kubernetes.io/component: exporter
+    release: prometheus
+spec:
+  jobLabel: app.kubernetes.io/name # Ensure prometheus job name match application's name
+  endpoints:
+    - path: /metrics
+      port: http
+      interval: 60s
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  selector:
+    matchLabels:
+      app: prometheus-cloudwatch-exporter 
+      release: cloudwatch 

@@ -1,0 +1,16 @@
+apiVersion: v1
+stringData:
+  admin-password: 74mJ4Z0xxx
+  s3-access-key-id: AKIAU6xxx
+  s3-secret-access-key: Cr4BHYkxxx
+  mail-password: nAKTIxxx
+kind: Secret
+metadata:
+  labels:
+    app: sentry
+    chart: sentry-25.9.0
+    heritage: Helm
+    release: sentry
+  name: sentry-custom-account
+  namespace: sentry
+type: Opaque

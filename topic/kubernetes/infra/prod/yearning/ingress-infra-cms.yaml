@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 100M
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/server-snippet: |
+        location ~* /api/actuator {
+            deny all;
+        }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+        add_header Strict-Transport-Security 'max-age=31536000; includeSubDomains;' always;
+     #   proxy_http_version 1.1; 
+     #   proxy_set_header Upgrade $http_upgrade; 
+     #   proxy_set_header Connection "upgrade";
+    nginx.ingress.kubernetes.io/whitelist-source-range: 124.90.29.0/24, 183.159.146.0/24,  125.118.11.60, 183.156.31.121, 166.1.221.204, 60.176.198.42
+  name: ingress-infra-cms
+  namespace: infra
+spec:
+  ingressClassName: nginx-dev
+  rules:
+  - host: kubeyearning.cici.com
+    http:
+      paths:
+      - backend:
+          service:
+            name: yearning
+            port:
+              number: 80
+        path: /
+        pathType: ImplementationSpecific
+

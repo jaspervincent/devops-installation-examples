@@ -1,0 +1,30 @@
+services:
+  # grafana/loki 镜像里 Dockerfile 声明了 USER 10001:10001，容器主进程是以 uid 10001 跑的
+  loki-init:
+    image: busybox:1.37
+    user: "0:0"
+    network_mode: none
+    command: sh -c "mkdir -p /mnt/loki && chown -R 10001:10001 /mnt/loki"
+    volumes:
+      - /data/loki:/mnt/loki
+        
+  loki:
+    image: grafana/loki:3.7.6
+    container_name: loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/config.yaml
+    ports:
+      - "${LOKI_BIND_IP}:3100:3100"
+    volumes:
+      - ./loki-config.yaml:/etc/loki/config.yaml:ro
+      - ./rules:/etc/loki/rules:ro
+      - /data/loki:/loki
+    depends_on:
+      loki-init:
+        condition: service_completed_successfully
+    networks:
+      - observability
+
+networks:
+  observability:
+    name: observability

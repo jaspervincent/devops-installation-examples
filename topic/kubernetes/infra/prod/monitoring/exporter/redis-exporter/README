@@ -1,0 +1,2 @@
+#Check metrics
+#curl http://<pod_ip>:9121/scrape?target=rediss://rxxxxx.amazonaws.com:6379

@@ -1,0 +1,316 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alloy-logs
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alloy-logs
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: alloy-logs
+subjects:
+  - kind: ServiceAccount
+    name: alloy
+    namespace: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: observability
+data:
+  config.alloy: |
+    logging {
+      level  = "info"
+      format = "logfmt"
+    }
+
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    discovery.relabel "ingress_controller" {
+      targets = discovery.kubernetes.pods.targets
+
+      // 每个 DaemonSet 实例只读取当前节点上的 Pod，避免重复采集。
+      rule {
+        source_labels = ["__meta_kubernetes_pod_node_name"]
+        regex         = sys.env("NODE_NAME")
+        action        = "keep"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        regex         = "nginx-ingress"
+        action        = "keep"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        regex         = "nginx-ingress-controller"
+        action        = "keep"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_node_name"]
+        target_label  = "node"
+      }
+
+      rule {
+        target_label = "cluster"
+        replacement  = "jp-prod-ack"
+      }
+
+      rule {
+        target_label = "job"
+        replacement  = "ingress-nginx/controller"
+      }
+
+      // kubelet Pod 日志路径：/var/log/pods/<namespace>_<pod>_<uid>/<container>/*.log
+      rule {
+        source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+        separator     = "/"
+        target_label  = "__path__"
+        replacement   = "/var/log/pods/*$1/*.log"
+      }
+    }
+
+    local.file_match "ingress_controller" {
+      path_targets = discovery.relabel.ingress_controller.output
+      sync_period  = "10s"
+    }
+
+    loki.source.file "ingress_controller" {
+      targets    = local.file_match.ingress_controller.targets
+      forward_to = [loki.process.ingress_controller.receiver]
+    }
+
+    loki.process "ingress_controller" {
+      // 先移除 Kubernetes CRI 的时间戳、stdout/stderr 和 partial flag。
+      stage.cri {}
+
+      stage.replace {
+        expression = `(?i)Authorization=(Bearer%20[^&\s"]+|Bearer\+[^&\s"]+|Bearer [^&\s"]+)`
+        replace    = "[REDACTED]"
+      }
+
+      stage.json {
+        drop_malformed = false
+
+        expressions = {
+          cf_ray                 = "cf_ray",
+          request_id             = "request_id",
+          cf_connecting_ip       = "cf_connecting_ip",
+          remote_addr            = "remote_addr",
+          x_forwarded_for        = "x_forwarded_for",
+          cf_country             = "cf_country",
+
+          method                 = "method",
+          scheme                 = "scheme",
+          host                   = "host",
+          path                   = "path",
+          protocol               = "protocol",
+          status                 = "to_string(status)",
+
+          request_length         = "to_string(request_length)",
+          body_bytes_sent        = "to_string(body_bytes_sent)",
+          request_time           = "to_string(request_time)",
+
+          upstream_name          = "upstream_name",
+          upstream_addr          = "upstream_addr",
+          upstream_connect_time  = "upstream_connect_time",
+          upstream_header_time   = "upstream_header_time",
+          upstream_response_time = "upstream_response_time",
+          upstream_status        = "upstream_status",
+
+          backend_namespace      = "namespace",
+          ingress                = "ingress",
+          service                = "service",
+          service_port           = "service_port",
+
+          referer                = "referer",
+          user_agent             = "user_agent",
+        }
+      }
+
+      stage.regex {
+        expression = `^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} \[(?P<nginx_level>[a-z]+)\]`
+      }
+
+      stage.labels {
+        values = {
+          method            = "",
+          status            = "",
+          backend_namespace = "",
+          ingress           = "",
+          service           = "",
+          nginx_level       = "",
+        }
+      }
+      // 高基数字段不建索引，仍可在 LogQL 中过滤。
+      stage.structured_metadata {
+        values = {
+          cf_ray                 = "",
+          request_id             = "",
+          cf_connecting_ip       = "",
+          remote_addr            = "",
+          x_forwarded_for        = "",
+          cf_country             = "",
+
+          scheme                 = "",
+          host                   = "",
+          path                   = "",
+          protocol               = "",
+
+          request_length         = "",
+          body_bytes_sent        = "",
+          request_time           = "",
+
+          upstream_name          = "",
+          upstream_addr          = "",
+          upstream_connect_time  = "",
+          upstream_header_time   = "",
+          upstream_response_time = "",
+          upstream_status        = "",
+
+          service_port           = "",
+          referer                = "",
+          user_agent             = "",
+        }
+      }
+
+      // 若确认不需要健康检查日志，可启用：
+      // stage.drop {
+      //   source     = "request_uri"
+      //   expression = `^/(healthz|readyz)$`
+      // }
+
+      forward_to = [loki.write.ec2.receiver]
+    }
+
+    loki.write "ec2" {
+      endpoint {
+        url = "http://10.50.22.46:3200/loki/api/v1/push"
+
+        batch_wait     = "1s"
+        batch_size     = "1MiB"
+        remote_timeout = "10s"
+
+        min_backoff_period  = "500ms"
+        max_backoff_period  = "5m"
+        max_backoff_retries = 20
+        retry_on_http_429    = true
+      }
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alloy
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: alloy
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alloy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alloy
+    spec:
+      imagePullSecrets:
+      - name: harbor-pull
+      serviceAccountName: alloy
+      terminationGracePeriodSeconds: 30
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.10.2
+          imagePullPolicy: IfNotPresent
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy/data
+            - --server.http.listen-addr=0.0.0.0:12345
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: http
+              containerPort: 12345
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+              readOnly: true
+            - name: pod-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/alloy
+      volumes:
+        - name: config
+          configMap:
+            name: alloy-config
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: data
+          hostPath:
+            path: /var/lib/alloy
+            type: DirectoryOrCreate

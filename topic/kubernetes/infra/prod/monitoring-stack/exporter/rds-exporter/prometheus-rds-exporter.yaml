@@ -1,0 +1,143 @@
+#https://github.com/qonto/prometheus-rds-exporter
+---
+# Source: prometheus-rds-exporter-chart/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-rds-exporter-prometheus-rds-exporter-chart
+  labels:
+    helm.sh/chart: prometheus-rds-exporter-chart-0.3.0
+    app.kubernetes.io/name: prometheus-rds-exporter-chart
+    app.kubernetes.io/instance: prometheus-rds-exporter
+    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/component: exporter
+    app.kubernetes.io/part-of: database-monitoring-framework
+    app.kubernetes.io/managed-by: Helm
+  namespace: monitoring
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/prometheus-rds-exporter
+---
+# Source: prometheus-rds-exporter-chart/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-rds-exporter-prometheus-rds-exporter-chart
+  namespace: monitoring
+  labels:
+    helm.sh/chart: prometheus-rds-exporter-chart-0.3.0
+    app.kubernetes.io/name: prometheus-rds-exporter-chart
+    app.kubernetes.io/instance: prometheus-rds-exporter
+    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/component: exporter
+    app.kubernetes.io/part-of: database-monitoring-framework
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  ports:
+    - port: 9043
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: prometheus-rds-exporter-chart
+    app.kubernetes.io/instance: prometheus-rds-exporter
+---
+# Source: prometheus-rds-exporter-chart/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus-rds-exporter-prometheus-rds-exporter-chart
+  namespace: monitoring
+  labels:
+    helm.sh/chart: prometheus-rds-exporter-chart-0.3.0
+    app.kubernetes.io/name: prometheus-rds-exporter-chart
+    app.kubernetes.io/instance: prometheus-rds-exporter
+    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/component: exporter
+    app.kubernetes.io/part-of: database-monitoring-framework
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus-rds-exporter-chart
+      app.kubernetes.io/instance: prometheus-rds-exporter
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: prometheus-rds-exporter-chart-0.3.0
+        app.kubernetes.io/name: prometheus-rds-exporter-chart
+        app.kubernetes.io/instance: prometheus-rds-exporter
+        app.kubernetes.io/version: "0.3.0"
+        app.kubernetes.io/component: exporter
+        app.kubernetes.io/part-of: database-monitoring-framework
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      #serviceAccountName: prometheus-rds-exporter-prometheus-rds-exporter-chart
+      serviceAccountName: prometheus-rds-exporter
+      securityContext:
+        {}
+      containers:
+        - name: prometheus-rds-exporter-chart
+          securityContext:
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 1001
+            runAsNonRoot: true
+            runAsUser: 1001
+          image: "public.ecr.aws/qonto/prometheus-rds-exporter:0.3.0"
+          imagePullPolicy: IfNotPresent
+          env:
+            
+          ports:
+            - name: http
+              containerPort: 9043
+              protocol: TCP
+          #livenessProbe:
+          #  httpGet:
+          #    path: /
+          #    port: http
+          #readinessProbe:
+          #  httpGet:
+          #    path: /
+          #    port: http
+          resources:
+            limits:
+              memory: 2Gi
+            requests:
+              cpu: 100m
+              memory: 48Mi
+---
+# Source: prometheus-rds-exporter-chart/templates/servicemonitor.yaml
+#  CRD documentation available on https://github.com/prometheus-operator/prometheus-operator/blob/v0.68.0/Documentation/api.md#servicemonitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: prometheus-rds-exporter-prometheus-rds-exporter-chart
+  namespace: monitoring
+  labels:
+    helm.sh/chart: prometheus-rds-exporter-chart-0.3.0
+    app.kubernetes.io/name: prometheus-rds-exporter-chart
+    app.kubernetes.io/instance: prometheus-rds-exporter
+    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/component: exporter
+    app.kubernetes.io/part-of: database-monitoring-framework
+    app.kubernetes.io/managed-by: Helm
+    release: prometheus
+spec:
+  jobLabel: app.kubernetes.io/name # Ensure prometheus job name match application's name
+  sampleLimit: 0
+  endpoints:
+    - path: /metrics
+      port: http
+      interval: 60s
+  namespaceSelector:
+    matchNames:
+      - monitoring
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus-rds-exporter-chart
+      app.kubernetes.io/instance: prometheus-rds-exporter
+

@@ -1,0 +1,133 @@
+groups:
+- name: NodeExporter
+  interval: 30s
+  rules:
+  - alert: HostDown
+    expr: up{job=~"node(-exporter)?"} == 0
+    for: 3m
+    labels: {severity: critical, level: 1, team: ops}
+    annotations:
+      summary: 主机不可用
+      description: "{{ $labels.instance }} 不可用\n LABELS = {{ $labels }}"
+  - alert: HostHighCpu
+    expr: 100 - (avg without(cpu, mode) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+    for: 5m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: 主机高 CPU 使用率
+      description: "CPU load is > 80%\n VALUE = {{ $value | printf \"%.2f\" }}%\n  LABELS = {{ $labels }}"
+  - alert: HostCpuHighIowait
+    annotations:
+      summary: 主机CPU高等待I/O
+      description: "CPU iowait > 10%。你的 CPU 处于空闲状态，正在等待存储设备响应。\n {{ $labels.instance }} CPU 使用率为 {{ $value }}\n  LABELS = {{ $labels }}% >80%"
+    expr: avg without (cpu) (rate(node_cpu_seconds_total{mode="iowait"}[5m])) > .10
+    for: 0m
+    labels: {severity: warning, level: 2, team: ops}
+  - alert: HostOutOfMemory
+    expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < .10)
+    for: 2m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: 主机内存不足 (实例 {{ $labels.instance }})
+      description: "节点内存即将占满（剩余不足 10%）\n VALUE = {{ $value | printf \"%.2f\" }}%\n  LABELS = {{ $labels }}"
+  - alert: HostOutOfDiskSpace
+    expr: (node_filesystem_avail_bytes{fstype!~"^(fuse.*|tmpfs|cifs|nfs)"} / node_filesystem_size_bytes < .10 and on (instance, device, mountpoint) node_filesystem_readonly == 0)
+    for: 2m
+    labels: {severity: critical, level: 1, team: ops}
+    annotations:
+      summary: 主机磁盘空间不足（实例 {{ $labels.instance }}）
+      description: "磁盘几乎已满（剩余 < 10%）\n VALUE = {{ $value | printf \"%.2f\" }}%\n  LABELS = {{ $labels }}"
+  - alert: HostOutOfInodes
+    expr: (node_filesystem_files_free / node_filesystem_files < .10 and ON (instance, device, mountpoint) node_filesystem_readonly == 0) and node_filesystem_files > 0
+    for: 2m
+    labels: {severity: critical, level: 1, team: ops}
+    annotations:
+      summary: 主机索引节点耗尽（实例 {{ $labels.instance }}）
+      description: "磁盘可用索引节点即将耗尽（剩余 < 10%）\n VALUE = {{ $value | printf \"%.2f\" }}%\n  LABELS = {{ $labels }}"
+  - alert: HostDiskMayFillIn24Hours
+    expr: predict_linear(node_filesystem_avail_bytes{fstype!~"^(fuse.*|tmpfs|cifs|nfs)"}[3h], 86400) <= 0 and node_filesystem_avail_bytes > 0 and node_filesystem_readonly == 0
+    for: 2m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: 主机磁盘可能在24小时内占满（实例 {{ $labels.instance }}）
+      description: "文件系统很可能在未来24小时内空间耗尽。\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+  - alert: HostDiskIoSaturation
+    expr: rate(node_disk_io_time_weighted_seconds_total[5m]) > 10
+    for: 5m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: 主机磁盘IO饱和（实例 {{ $labels.instance }}）
+      description: "{{ $labels.instance }} 上的加权磁盘I/O时间表明请求队列深度正在增加（类似于 iostat 的 aqu-sz），这是与原始磁盘忙时利用率不同的饱和症状。\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+      runbook_url: https://runbooks.prometheus-operator.dev/runbooks/node/nodediskiosaturation
+  - alert: HostUnusualNetworkThroughputIn
+    expr: ((rate(node_network_receive_bytes_total[5m]) / node_network_speed_bytes) > .80) and node_network_speed_bytes > 0
+    for: 0m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: 主机异常网络输入吞吐量（实例 {{ $labels.instance }}）
+      description: "主机接收带宽过高（>80%）。\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+  - alert: HostUnusualNetworkThroughputOut
+    expr: ((rate(node_network_transmit_bytes_total[5m]) / node_network_speed_bytes) > .80) and node_network_speed_bytes > 0
+    for: 0m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: 主机异常网络输出吞吐量（实例 {{ $labels.instance }}）
+      description: "主机输出带宽过高（>80%）\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+  - alert: HostCpuLoadSaturation
+    expr: node_load1 / count without (cpu, mode) (node_cpu_seconds_total{mode="idle"}) > 2
+    for: 10m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: 主机CPU负载饱和（实例 {{ $labels.instance }}）
+      description: "{{ $labels.instance }} 上每个CPU核心的1分钟负载平均值是空闲核心数的两倍以上，这意味着即使原始CPU利用率看起来正常，进程仍会排队等待CPU资源。\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+  - alert: 计算节点发生OOMKILL
+    expr: increase(node_vmstat_oom_kill[5m]) > 0
+    for: 0m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: 检测到主机 OOM 查杀 (实例 {{ $labels.instance }})
+      description: "检测到 OOM 杀死进程\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+  - alert: 主机上下文切换率过高
+    expr: (rate(node_context_switches_total[15m])/count without(mode,cpu) (node_cpu_seconds_total{mode="idle"})) / (rate(node_context_switches_total[1d])/count without(mode,cpu) (node_cpu_seconds_total{mode="idle"})) > 2 and rate(node_context_switches_total[1d]) > 0
+    for: 0m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: 主机上下文切换过高（实例 {{ $labels.instance }}）
+      description: "节点上下文切换正在持续增长（过去15分钟内是日平均值的两倍）\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+  - alert: 主机时钟偏差
+    expr: ((node_timex_offset_seconds > 0.05 and deriv(node_timex_offset_seconds[5m]) >= 0) or (node_timex_offset_seconds < -0.05 and deriv(node_timex_offset_seconds[5m]) <= 0))
+    for: 10m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: 主机时钟偏差（实例 {{ $labels.instance }}）
+      description: "检测到时钟偏差。时钟不同步。请确保此主机上的 NTP 配置正确。\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+  - alert: 主机时钟未同步
+    expr: (min_over_time(node_timex_sync_status[3m]) == 0 and node_timex_maxerror_seconds >= 16)
+    for: 5m
+    labels: {severity: warning, level: 2, team: ops}
+    annotations:
+      summary: 主机时钟未同步（实例 {{ $labels.instance }}）
+      description: "时钟未同步。请确保此主机上配置了NTP。\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+  - alert: 主机文件系统设备错误
+    expr: node_filesystem_device_error{fstype!~"^(fuse.*|tmpfs|cifs|nfs)"} == 1
+    for: 5m
+    labels: {severity: critical, level: 1, team: ops}
+    annotations:
+      summary: 主机文件系统设备错误（实例 {{ $labels.instance }}）
+      description: "对 {{ $labels.mountpoint }} 文件系统执行 stat 操作时出错\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+  - alert: 主机磁盘读取延迟异常
+    expr: '(rate(node_disk_read_time_seconds_total[1m]) / rate(node_disk_reads_completed_total[1m]) > 0.1 and rate(node_disk_reads_completed_total[1m]) > 0)'
+    for: 2m
+    labels:
+      severity: warning
+    annotations:
+      summary: 主机异常磁盘读取延迟（实例 {{ $labels.instance }}）
+      description: "磁盘延迟正在增加（读取操作延迟 > 100毫秒）\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+  - alert: 主机异常磁盘写入延迟
+    expr: '(rate(node_disk_write_time_seconds_total[1m]) / rate(node_disk_writes_completed_total[1m]) > 0.1 and rate(node_disk_writes_completed_total[1m]) > 0)'
+    for: 2m
+    labels:
+      severity: warning
+    annotations:
+      summary: 主机异常磁盘写入延迟（实例 {{ $labels.instance }}）
+      description: "磁盘延迟正在增加（写入操作 > 100毫秒）\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"

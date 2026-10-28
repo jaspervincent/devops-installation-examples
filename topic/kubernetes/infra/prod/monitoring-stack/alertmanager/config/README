@@ -1,0 +1,3 @@
+kubectl -n monitoring create secret generic alertmanager-example --from-file=alertmanager.yaml
+#update
+kubectl -n monitoring create secret generic alertmanager-example --from-file=alertmanager.yaml --dry-run -oyaml|kubectl replace -f-

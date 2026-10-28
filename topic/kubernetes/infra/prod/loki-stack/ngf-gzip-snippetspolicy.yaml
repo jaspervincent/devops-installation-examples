@@ -1,0 +1,55 @@
+# NGF 数据面的 gzip 压缩
+#
+# 数据面的 nginx.conf 由 NGF 控制器生成，不能直接改。注入配置有两条路：
+#   SnippetsFilter —— 作用于 HTTPRoute/GRPCRoute，要在每条路由里引用
+#   SnippetsPolicy —— 作用于 Gateway，一次配置对该 Gateway 下所有路由生效  <- 用这个
+# 两者都由 helm 的 nginxGateway.snippets.enable 开启
+# （旧的 snippetsFilters.enable 已废弃，且只开 SnippetsFilter）。
+#
+# gzip 必须下在 http 上下文，所以 context: http。
+apiVersion: gateway.nginx.org/v1alpha1
+kind: SnippetsPolicy
+metadata:
+  name: gzip-compression
+  namespace: default
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: gateway-public
+  snippets:
+  - context: http
+    value: |
+      gzip on;
+
+      # 4 是性价比拐点：再往上 CPU 涨得快、体积只多省几个百分点
+      gzip_comp_level 4;
+
+      # 小响应压了反而更大（gzip 头部开销约 20 字节）
+      gzip_min_length 1k;
+
+      # 必须显式开。默认 off 时，带 Via 头的代理响应一律不压——
+      # 而网关本身就是反向代理，不加这行等于没开
+      gzip_proxied any;
+
+      # 让 CDN / 中间代理按 Accept-Encoding 分别缓存，
+      # 避免把压缩版发给不支持的客户端
+      gzip_vary on;
+
+      # text/html 不用列，nginx 总是压缩它。
+      # 刻意【不包含】已经是压缩格式的类型：
+      #   图片 png/jpg/gif/webp、字体 woff2、视频、zip/gz
+      # 对它们再压一遍只烧 CPU，体积还可能变大。
+      gzip_types
+        text/plain
+        text/css
+        text/xml
+        text/javascript
+        application/json
+        application/javascript
+        application/xml
+        application/rss+xml
+        application/atom+xml
+        application/manifest+json
+        application/vnd.api+json
+        image/svg+xml;

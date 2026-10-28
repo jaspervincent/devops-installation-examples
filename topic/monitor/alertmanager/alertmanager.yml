@@ -1,0 +1,170 @@
+# Alertmanager configuration
+#
+# 部署前：
+# 1. 在飞书后台废弃旧 Webhook Token，并生成新 Token。
+# 2. 将文件中的 <NEW_LARK_WEBHOOK_TOKEN> 替换为新 Token。
+# 3. 使用 amtool check-config 验证配置。
+
+global:
+  resolve_timeout: 5m
+
+route:
+  # 所有未匹配子路由的告警发送到默认接收器
+  receiver: default-receiver
+
+  group_by:
+    - cluster
+    - alertname
+
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 2h
+
+  routes:
+    # ============================================================
+    # Prometheus Agent：jp-ack-01
+    # ============================================================
+    - receiver: jp-ack-01
+      matchers:
+        - prometheus_agent=~"jp-.*-ack-01"
+
+      group_wait: 10s
+      group_interval: 5m
+      repeat_interval: 2h
+
+      routes:
+        # Critical 每 30 分钟重复一次
+        - receiver: jp-ack-01
+          matchers:
+            - 'severity="critical"'
+          repeat_interval: 30m
+
+        # Info 每 12 小时重复一次
+        - receiver: jp-ack-01
+          matchers:
+            - 'severity="info"'
+          repeat_interval: 12h
+
+    # ============================================================
+    # Loki Ruler：jp-ack-01
+    #
+    # Loki 需要携带以下外部标签：
+    #   cluster: jp-ack-01
+    #   alert_source: loki
+    # ============================================================
+    - receiver: bd-aliyun-ingress-01
+      matchers:
+        - 'alert_source="loki"'
+        - 'cluster=~"jp-.*-aliyun-01"'
+
+      group_wait: 10s
+      group_interval: 5m
+      repeat_interval: 2h
+
+      routes:
+        # Loki Critical 每 30 分钟重复一次
+        - receiver: bd-aliyun-ingress-01
+          matchers:
+            - 'severity="critical"'
+          repeat_interval: 30m
+
+        # Loki Info 每 12 小时重复一次
+        - receiver: bd-aliyun-ingress-01
+          matchers:
+            - 'severity="info"'
+          repeat_interval: 12h
+
+    # ============================================================
+    # 未匹配具体来源的 Critical 告警
+    # ============================================================
+    - receiver: default-receiver
+      matchers:
+        - 'severity="critical"'
+      repeat_interval: 30m
+
+    # ============================================================
+    # 未匹配具体来源的 Info 告警
+    # ============================================================
+    - receiver: default-receiver
+      matchers:
+        - 'severity="info"'
+      repeat_interval: 12h
+
+receivers:
+  # jp-ack-01 的飞书接收器
+  - name: jp-ack-01
+    webhook_configs:
+      - url: 'http://prometheusalert:8080/prometheusalert?type=fs&tpl=prometheus-fs&fsurl=https://open.larksuite.com/open-apis/bot/v2/hook/<NEW_LARK_WEBHOOK_TOKEN>'
+        send_resolved: true
+        max_alerts: 0
+        timeout: 30s
+
+
+
+  # bd-aliyun-ingress-01 的飞书接收器
+  - name: bd-aliyun-ingress-01
+    webhook_configs:
+      - url: 'http://prometheusalert:8080/prometheusalert?type=fs&tpl=prometheus-fs-ingress&fsurl=https://open.larksuite.com/open-apis/bot/v2/hook/<NEW_LARK_WEBHOOK_TOKEN>'
+        send_resolved: true
+        max_alerts: 0
+        timeout: 30s
+
+  # 默认飞书接收器
+  - name: default-receiver
+    webhook_configs:
+      - url: 'http://prometheusalert:8080/prometheusalert?type=fs&tpl=prometheus-fs&fsurl=https://open.larksuite.com/open-apis/bot/v2/hook/<NEW_LARK_WEBHOOK_TOKEN>'
+        send_resolved: true
+        max_alerts: 0
+        timeout: 30s
+
+inhibit_rules:
+  # PVC 已经严重不足时，抑制“四天内预计写满”告警
+  - source_matchers:
+      - 'alertname="KubernetesPVC可用空间不足"'
+    target_matchers:
+      - 'alertname="KubernetesPVC预计四天内写满"'
+    equal:
+      - cluster
+      - namespace
+      - persistentvolumeclaim
+
+  # Deployment 没有可用副本时，抑制副本数不匹配和发布卡住告警
+  - source_matchers:
+      - 'alertname="KubernetesDeployment无可用副本"'
+    target_matchers:
+      - 'alertname=~"KubernetesDeployment副本数不匹配|KubernetesDeployment发布卡住"'
+    equal:
+      - cluster
+      - namespace
+      - deployment
+
+  # StatefulSet 完全不可用时，抑制低优先级的发布告警
+  - source_matchers:
+      - 'alertname="KubernetesStatefulSet无可用副本"'
+    target_matchers:
+      - 'alertname=~"KubernetesStatefulSet副本数不匹配|KubernetesStatefulSet更新卡住"'
+    equal:
+      - cluster
+      - namespace
+      - statefulset
+
+  # OOM 或 CrashLoopBackOff 告警抑制通用的容器频繁重启告警
+  - source_matchers:
+      - 'alertname=~"KubernetesPod容器发生OOM|KubernetesPod发生CrashLoopBackOff"'
+    target_matchers:
+      - 'alertname="KubernetesPod容器频繁重启"'
+    equal:
+      - cluster
+      - namespace
+      - pod
+      - container
+
+  # HPA 扩容受限告警抑制普通的达到最大副本数告警
+  - source_matchers:
+      - 'alertname="KubernetesHPA达到上限且扩容受限"'
+    target_matchers:
+      - 'alertname="KubernetesHPA长时间达到最大副本数"'
+    equal:
+      - cluster
+      - namespace
+      - horizontalpodautoscaler

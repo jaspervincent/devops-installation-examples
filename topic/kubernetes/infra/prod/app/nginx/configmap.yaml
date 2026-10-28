@@ -1,0 +1,108 @@
+apiVersion: v1
+data:
+  default.conf: |
+    server {
+      listen 80 default_server;
+      server_name _;
+
+      access_log  /dev/stdout  access_json;
+
+      root /usr/share/nginx/html;
+      index index.html;
+
+      location / {
+        try_files $uri $uri/ /index.html;
+      }
+
+      location /api/ {
+        set $jp_gateway jp-gateway-svc.jp-java.svc.cluster.local;
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass http://$jp_gateway:8080;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        # websocket / SSE 透传
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    300s;
+        proxy_read_timeout    300s;
+      }
+
+    }
+  nginx.conf: |
+    worker_processes  auto;
+
+    error_log  /var/log/nginx/error.log warn;
+    pid        /var/run/nginx.pid;
+
+    events {
+        # 可以根据业务并发量适当调高
+        worker_connections  1024;
+    }
+
+    http {
+        include       mime.types;
+        default_type  application/octet-stream;
+        # 高效传输文件
+        sendfile        on;
+        # 长连接超时时间
+        keepalive_timeout  65;
+        # 单连接最大请求数，提高长连接复用率
+        keepalive_requests 100000;
+        # 限制body大小
+        client_max_body_size 100m;
+        client_header_buffer_size 32k;
+        client_body_buffer_size   512k;
+        # 开启静态资源压缩
+        gzip_static on;
+        # 连接数限制 (防御类配置) 10m 一般够用了，能存储上万 IP 的计数
+        limit_conn_zone $binary_remote_addr zone=perip:10m;
+        limit_conn_zone $server_name zone=perserver:10m;
+        # 隐藏 nginx 版本号，防止暴露版本信息
+        server_tokens off;
+
+        # 使用 kube-dns 的 ClusterIP，实现动态 dns 刷新
+        #   kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}'
+        resolver 192.168.0.10 valid=10s ipv6=off;
+        resolver_timeout 5s;
+
+        # websocket 升级用，配合 default.conf 的 proxy_set_header Connection
+        map $http_upgrade $connection_upgrade {
+            default upgrade;
+            ''      close;
+        }
+
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                              '$status $body_bytes_sent "$http_referer" '
+                              '"$http_user_agent" "$http_x_forwarded_for"';
+
+        log_format access_json escape=json '{"@timestamp":"$time_iso8601",'
+                  '"host":"$server_addr",'
+                  '"clientip":"$remote_addr",'
+                  '"size":$body_bytes_sent,'
+                  '"responsetime":$request_time,'
+                  '"upstreamtime":"$upstream_response_time",'
+                  '"upstreamhost":"$upstream_addr",'
+                  '"host":"$host",'
+                  '"method":"$request_method",'
+                  '"uri":"$request_uri",'
+                  '"proxy_uri":"$uri",'
+                  '"xff":"$http_x_forwarded_for",'
+                  '"referer":"$http_referer",'
+                  '"http_user_agent":"$http_user_agent",'
+                  '"status":"$status"}';
+
+        include /etc/nginx/conf.d/*.conf;
+    }
+kind: ConfigMap
+metadata:
+  name: jp-front-cm
+  namespace: jp-front

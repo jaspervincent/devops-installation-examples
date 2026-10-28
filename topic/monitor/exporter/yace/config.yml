@@ -1,0 +1,114 @@
+apiVersion: v1alpha1
+
+sts-region: ap-southeast-1
+
+discovery:
+  jobs:
+    - type: AWS/RDS
+      regions:
+        - ap-southeast-1
+
+      roles:
+        - roleArn: arn:aws:iam::__CLOUD_ACCOUNT__:role/PrometheusCrossAccountRole
+          externalId: c435xxx
+
+      period: 300
+      length: 600
+      delay: 300
+
+      customTags:
+        - key: aws_account_id
+          value: "__CLOUD_ACCOUNT__"
+
+      metrics:
+        - name: CPUUtilization
+          statistics: [Average, Maximum]
+
+        - name: DatabaseConnections
+          statistics: [Average, Maximum]
+
+        - name: FreeStorageSpace
+          statistics: [Average]
+
+        - name: FreeableMemory
+          statistics: [Average]
+
+        - name: ReadLatency
+          statistics: [Average, Maximum]
+
+        - name: WriteLatency
+          statistics: [Average, Maximum]
+
+        - name: ReadIOPS
+          statistics: [Average]
+
+        - name: WriteIOPS
+          statistics: [Average]
+
+        - name: DiskQueueDepth
+          statistics: [Average, Maximum]
+
+        - name: NetworkReceiveThroughput
+          statistics: [Average]
+
+        - name: NetworkTransmitThroughput
+          statistics: [Average]
+
+        - name: ReplicaLag
+          statistics: [Average, Maximum]
+
+    - type: AWS/ElastiCache
+      regions:
+        - ap-southeast-1
+
+      roles:
+        - roleArn: arn:aws:iam::__CLOUD_ACCOUNT__:role/PrometheusCrossAccountRole
+          externalId: c435xxx
+
+      period: 300
+      length: 600
+      delay: 300
+
+      customTags:
+        - key: aws_account_id
+          value: "__CLOUD_ACCOUNT__"
+
+      metrics:
+        - name: CPUUtilization
+          statistics: [Average, Maximum]
+
+        - name: EngineCPUUtilization
+          statistics: [Average, Maximum]
+
+        - name: FreeableMemory
+          statistics: [Average]
+
+        - name: DatabaseMemoryUsagePercentage
+          statistics: [Average, Maximum]
+
+        - name: CurrConnections
+          statistics: [Average, Maximum]
+
+        - name: CurrItems
+          statistics: [Average]
+
+        - name: CacheHits
+          statistics: [Sum]
+
+        - name: CacheMisses
+          statistics: [Sum]
+
+        - name: Evictions
+          statistics: [Sum]
+
+        - name: ReplicationLag
+          statistics: [Average, Maximum]
+
+        - name: NetworkBytesIn
+          statistics: [Sum]
+
+        - name: NetworkBytesOut
+          statistics: [Sum]
+
+        - name: SwapUsage
+          statistics: [Average, Maximum]

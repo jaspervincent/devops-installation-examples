@@ -1,0 +1,471 @@
+# 命名原则：
+# 1. group name、alert name 和面向人的注释使用中文，便于告警通知和页面展示。
+# 2. label 名、severity、team、component 等机器标识保持 ASCII，避免影响查询和通知路由。
+# 3. Ingress、P95、5xx、CF-Ray、SSE、Loki、Alloy、Pod、Service 以及日志字段名属于技术标识，按需保留原名。
+
+groups:
+  # Ingress 可用性、错误率和响应性能
+  - name: "Ingress-NGINX 可用性与性能"
+    interval: 1m
+    limit: 100
+    rules:
+      # 告警一：Ingress 5xx 错误率过高
+      - alert: "Ingress 5xx 错误率过高"
+        expr: |
+          (
+            sum by (cluster, ingress, service) (
+              count_over_time({job="ingress-nginx/controller", status=~"5.."}[5m])
+            )
+            /
+            sum by (cluster, ingress, service) (
+              count_over_time({job="ingress-nginx/controller"}[5m])
+            )
+          ) > 0.05
+          and on (cluster, ingress, service)
+          sum by (cluster, ingress, service) (
+            count_over_time({job="ingress-nginx/controller"}[5m])
+          ) >= 20
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+          component: ingress-nginx
+        annotations:
+          alert_name_zh: "Ingress 5xx 错误率过高"
+          severity_zh: "严重"
+          team_zh: "平台运维团队"
+          component_zh: "Ingress-NGINX"
+          summary: "Ingress 5xx 错误率持续超过 5%"
+          description: "集群={{ $labels.cluster }}，Ingress={{ $labels.ingress }}，Service={{ $labels.service }}；最近 5 分钟请求量不少于 20，且 5xx 错误率持续超过 5%。当前比例={{ $value }}（1 表示 100%）。"
+          runbook: "检查 5xx 明细、upstream_status、request_id、cf_ray，并确认后端 Pod、数据库和依赖服务状态。"
+
+      # 告警二：Ingress 上游响应时间 P95 过高
+      - alert: "Ingress 上游响应时间 P95 过高"
+        expr: |
+          quantile_over_time(
+            0.95,
+            {job="ingress-nginx/controller"}
+            | json upstream_time="upstream_response_time"
+            | upstream_time != ""
+            | upstream_time != "-"
+            | unwrap upstream_time
+            | __error__=""
+            [5m]
+          ) by (cluster, ingress, service) > 2
+          and on (cluster, ingress, service)
+          sum by (cluster, ingress, service) (
+            count_over_time({job="ingress-nginx/controller"}[5m])
+          ) >= 20
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          component: ingress-nginx
+        annotations:
+          alert_name_zh: "Ingress 上游响应时间 P95 过高"
+          severity_zh: "警告"
+          team_zh: "平台运维团队"
+          component_zh: "Ingress-NGINX"
+          summary: "Ingress 上游响应时间 P95 持续超过 2 秒"
+          description: "集群={{ $labels.cluster }}，Ingress={{ $labels.ingress }}，Service={{ $labels.service }}；upstream_response_time 的 P95 当前值={{ $value }} 秒。"
+          runbook: "从 Grafana 的“Top 10 上游慢 URI（P95）”下钻到慢请求明细，对比 connect/header/upstream_response/request_time。"
+
+      # 告警三：Ingress 上游超时集中发生
+      - alert: "Ingress 上游超时集中发生"
+        expr: |
+          sum by (
+            cluster,
+            namespace,
+            pod,
+            host_value,
+            method,
+            upstream_addr_value,
+            timeout_phase
+          ) (
+            count_over_time(
+              {job="ingress-nginx/controller"}
+              |= "upstream timed out"
+              | regexp `while (?P<timeout_phase>[^,]+),`
+              | regexp `request: "(?P<method>[A-Z]+) [^"]+"`
+              | regexp `upstream: "https?://(?P<upstream_addr_value>[^/"]+)`
+              | regexp `host: "(?P<host_value>[^"]+)"`
+              [5m]
+            )
+          ) > 10
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+          component: ingress-nginx
+        annotations:
+          alert_name_zh: "Ingress 上游超时集中发生"
+          severity_zh: "严重"
+          team_zh: "平台运维团队"
+          component_zh: "Ingress-NGINX"
+          summary: "{{ $labels.host_value }} 访问后端 {{ $labels.upstream_addr_value }} 时持续发生上游超时"
+          description: "集群={{ $labels.cluster }}，Controller Namespace={{ $labels.namespace }}，Controller Pod={{ $labels.pod }}；请求主机={{ $labels.host_value }}，请求方法={{ $labels.method }}，后端地址={{ $labels.upstream_addr_value }}，超时阶段={{ $labels.timeout_phase }}；最近 5 分钟出现 {{ printf \"%.0f\" $value }} 次 upstream timed out（阈值：>10 次），并已持续 2 分钟。用户可能收到 504 或请求长时间无响应。"
+          logql: '{job="ingress-nginx/controller", cluster="{{ $labels.cluster }}", pod="{{ $labels.pod }}"} |= "upstream timed out"'
+          runbook: "1. 在 Grafana Explore 执行通知中的 LogQL 查看原始错误；2. 核对后端地址对应的 Pod/Service 及其就绪状态；3. 根据超时阶段检查连接、响应头或响应体耗时；4. 检查应用线程池、连接池、数据库与下游依赖；5. 确认 proxy-connect/read/send-timeout 是否合理。"
+
+      # 告警四：Ingress 499 比例过高
+      - alert: "Ingress 499 比例过高"
+        expr: |
+          (
+            sum by (cluster, ingress, service) (
+              count_over_time(
+                {job="ingress-nginx/controller", status="499"}
+                | json request_uri="path"
+                | request_uri != "/stable/v1/resource/sse"
+                | __error__=""
+                [10m]
+              )
+            )
+            /
+            sum by (cluster, ingress, service) (
+              count_over_time(
+                {job="ingress-nginx/controller"}
+                | json request_uri="path"
+                | request_uri != "/stable/v1/resource/sse"
+                | __error__=""
+                [10m]
+              )
+            )
+          ) > 0.10
+          and on (cluster, ingress, service)
+          sum by (cluster, ingress, service) (
+            count_over_time(
+              {job="ingress-nginx/controller"}
+              | json request_uri="path"
+              | request_uri != "/stable/v1/resource/sse"
+              | __error__=""
+              [10m]
+            )
+          ) >= 20
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          component: ingress-nginx
+        annotations:
+          alert_name_zh: "Ingress 499 比例过高"
+          severity_zh: "警告"
+          team_zh: "平台运维团队"
+          component_zh: "Ingress-NGINX"
+          summary: "Ingress 非 SSE 请求的 499 比例持续超过 10%"
+          description: "集群={{ $labels.cluster }}，Ingress={{ $labels.ingress }}，Service={{ $labels.service }}；排除 SSE 接口后，客户端提前断开的比例持续超过 10%。当前比例={{ $value }}（1 表示 100%）。"
+          runbook: "检查客户端/Cloudflare 超时设置，并与 request_time、upstream_response_time 对比，确认是否为上游响应过慢导致客户端放弃。"
+
+  # Cloudflare 链路和 upstream 状态
+  - name: "Ingress-NGINX Cloudflare 与上游状态"
+    interval: 1m
+    limit: 100
+    rules:
+      # 告警五：缺少 CF-Ray 的请求比例过高
+      - alert: "Ingress 缺少 CF-Ray 的请求比例过高"
+        expr: |
+          (
+            sum by (cluster, ingress, service) (
+              count_over_time(
+                {job="ingress-nginx/controller"}
+                | json cf_ray_value="cf_ray"
+                | cf_ray_value=""
+                | __error__=""
+                [10m]
+              )
+            )
+            /
+            sum by (cluster, ingress, service) (
+              count_over_time(
+                {job="ingress-nginx/controller"}
+                | json
+                | __error__=""
+                [10m]
+              )
+            )
+          ) > 0.05
+          and on (cluster, ingress, service)
+          sum by (cluster, ingress, service) (
+            count_over_time(
+              {job="ingress-nginx/controller"}
+              | json
+              | __error__=""
+              [10m]
+            )
+          ) >= 20
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          component: cloudflare
+        annotations:
+          alert_name_zh: "缺少 CF-Ray 的请求比例过高"
+          severity_zh: "警告"
+          team_zh: "平台运维团队"
+          component_zh: "Cloudflare 回源链路"
+          summary: "缺少 CF-Ray 的请求比例持续超过 5%"
+          description: "集群={{ $labels.cluster }}，Ingress={{ $labels.ingress }}，Service={{ $labels.service }}；可能存在绕过 Cloudflare、DNS 代理关闭或请求头未传递。当前比例={{ $value }}（1 表示 100%）。"
+          runbook: "确认该域名是否必须经过 Cloudflare；检查 DNS 橙云状态、源站安全组、Cloudflare 回源链路和 Ingress 请求头。"
+
+      # 告警六：Ingress 上游 5xx 比例过高
+      - alert: "Ingress 上游 5xx 比例过高"
+        expr: |
+          (
+            sum by (cluster, ingress, service) (
+              count_over_time(
+                {job="ingress-nginx/controller"}
+                | json upstream_status_value="upstream_status"
+                | upstream_status_value=~"(^|.*, ?)(5[0-9]{2})(,.*|$)"
+                | __error__=""
+                [5m]
+              )
+            )
+            /
+            sum by (cluster, ingress, service) (
+              count_over_time({job="ingress-nginx/controller"}[5m])
+            )
+          ) > 0.05
+          and on (cluster, ingress, service)
+          sum by (cluster, ingress, service) (
+            count_over_time({job="ingress-nginx/controller"}[5m])
+          ) >= 20
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+          component: ingress-nginx
+        annotations:
+          alert_name_zh: "Ingress 上游 5xx 比例过高"
+          severity_zh: "警告"
+          team_zh: "平台运维团队"
+          component_zh: "Ingress-NGINX 上游服务"
+          summary: "Ingress 上游状态码中的 5xx 比例持续超过 5%"
+          description: "集群={{ $labels.cluster }}，Ingress={{ $labels.ingress }}，Service={{ $labels.service }}；upstream_status 中的 5xx 比例持续超过 5%。当前比例={{ $value }}（1 表示 100%）。"
+          runbook: "检查 upstream_status、upstream_addr、request_id 和对应后端 Pod 日志；多值 upstream_status 可能表示发生过重试。"
+
+  # Upstream 重试和后端实例健康状态
+  - name: "Ingress-NGINX 后端实例健康"
+    interval: 1m
+    limit: 100
+    rules:
+      # 告警七：Ingress 上游重试比例过高
+      - alert: "Ingress 上游重试比例过高"
+        expr: |
+          (
+            sum by (cluster, backend_namespace, ingress, service) (
+              count_over_time(
+                {job="ingress-nginx/controller"}
+                | json upstream_status_value="upstream_status"
+                | upstream_status_value=~".*,.*"
+                | __error__=""
+                [5m]
+              )
+            )
+            /
+            sum by (cluster, backend_namespace, ingress, service) (
+              count_over_time({job="ingress-nginx/controller"}[5m])
+            )
+          ) > 0.02
+          and on (cluster, backend_namespace, ingress, service)
+          sum by (cluster, backend_namespace, ingress, service) (
+            count_over_time({job="ingress-nginx/controller"}[5m])
+          ) >= 50
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+          component: ingress-nginx
+        annotations:
+          alert_name_zh: "Ingress 上游重试比例过高"
+          severity_zh: "警告"
+          team_zh: "平台运维团队"
+          component_zh: "Ingress-NGINX 上游重试"
+          summary: "Ingress 上游重试比例持续超过 2%"
+          description: "集群={{ $labels.cluster }}，Namespace={{ $labels.backend_namespace }}，Ingress={{ $labels.ingress }}，Service={{ $labels.service }}；最近 5 分钟请求量不少于 50，且上游重试比例持续超过 2%。当前比例={{ $value }}（1 表示 100%）。"
+          runbook: "检查 upstream_status 和 upstream_addr 的多值记录，确认首次失败后是否重试成功，并定位不稳定的后端 Pod、连接池或依赖服务。"
+
+      # 告警八：Ingress 后端地址 5xx 比例过高
+      - alert: "Ingress 后端地址 5xx 比例过高"
+        expr: |
+          (
+            sum by (cluster, backend_namespace, ingress, service, upstream_addr_value) (
+              count_over_time(
+                {job="ingress-nginx/controller"}
+                | json upstream_addr_value="upstream_addr", upstream_status_value="upstream_status"
+                | upstream_addr_value != ""
+                | upstream_addr_value != "-"
+                | upstream_addr_value !~ ".*,.*"
+                | upstream_status_value=~"5[0-9]{2}"
+                | __error__=""
+                [5m]
+              )
+            )
+            /
+            sum by (cluster, backend_namespace, ingress, service, upstream_addr_value) (
+              count_over_time(
+                {job="ingress-nginx/controller"}
+                | json upstream_addr_value="upstream_addr"
+                | upstream_addr_value != ""
+                | upstream_addr_value != "-"
+                | upstream_addr_value !~ ".*,.*"
+                | __error__=""
+                [5m]
+              )
+            )
+          ) > 0.05
+          and on (cluster, backend_namespace, ingress, service, upstream_addr_value)
+          sum by (cluster, backend_namespace, ingress, service, upstream_addr_value) (
+            count_over_time(
+              {job="ingress-nginx/controller"}
+              | json upstream_addr_value="upstream_addr"
+              | upstream_addr_value != ""
+              | upstream_addr_value != "-"
+              | upstream_addr_value !~ ".*,.*"
+              | __error__=""
+              [5m]
+            )
+          ) >= 20
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+          component: ingress-nginx
+        annotations:
+          alert_name_zh: "Ingress 后端地址 5xx 比例过高"
+          severity_zh: "严重"
+          team_zh: "平台运维团队"
+          component_zh: "Ingress-NGINX 后端实例"
+          summary: "单个 Ingress 后端地址的 5xx 比例持续超过 5%"
+          description: "集群={{ $labels.cluster }}，Namespace={{ $labels.backend_namespace }}，Ingress={{ $labels.ingress }}，Service={{ $labels.service }}，后端地址={{ $labels.upstream_addr_value }}；最近 5 分钟请求量不少于 20，且 upstream 5xx 比例持续超过 5%。当前比例={{ $value }}（1 表示 100%）。"
+          runbook: "定位 upstream_addr 对应的 Pod，检查应用日志、健康检查、连接池、数据库及下游依赖；本规则仅统计未发生多后端重试的请求。"
+
+      # 告警九：Ingress 后端地址响应时间 P95 过高
+      - alert: "Ingress 后端地址响应时间 P95 过高"
+        expr: |
+          quantile_over_time(
+            0.95,
+            {job="ingress-nginx/controller"}
+            | json upstream_addr_value="upstream_addr", upstream_response_time_raw="upstream_response_time"
+            | upstream_addr_value != ""
+            | upstream_addr_value != "-"
+            | upstream_addr_value !~ ".*,.*"
+            | upstream_response_time_raw != ""
+            | upstream_response_time_raw != "-"
+            | upstream_response_time_raw !~ ".*,.*"
+            | unwrap upstream_response_time_raw
+            | __error__=""
+            [5m]
+          ) by (cluster, backend_namespace, ingress, service, upstream_addr_value) > 2
+          and on (cluster, backend_namespace, ingress, service, upstream_addr_value)
+          sum by (cluster, backend_namespace, ingress, service, upstream_addr_value) (
+            count_over_time(
+              {job="ingress-nginx/controller"}
+              | json upstream_addr_value="upstream_addr"
+              | upstream_addr_value != ""
+              | upstream_addr_value != "-"
+              | upstream_addr_value !~ ".*,.*"
+              | __error__=""
+              [5m]
+            )
+          ) >= 20
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+          component: ingress-nginx
+        annotations:
+          alert_name_zh: "Ingress 后端地址响应时间 P95 过高"
+          severity_zh: "警告"
+          team_zh: "平台运维团队"
+          component_zh: "Ingress-NGINX 后端实例"
+          summary: "单个 Ingress 后端地址的响应时间 P95 持续超过 2 秒"
+          description: "集群={{ $labels.cluster }}，Namespace={{ $labels.backend_namespace }}，Ingress={{ $labels.ingress }}，Service={{ $labels.service }}，后端地址={{ $labels.upstream_addr_value }}；最近 5 分钟请求量不少于 20，且 upstream_response_time P95 持续超过 2 秒。当前值={{ $value }} 秒。"
+          runbook: "定位 upstream_addr 对应的 Pod，检查 CPU、内存、线程池、连接池、数据库慢查询和下游依赖；本规则仅统计未发生多后端重试的请求。"
+
+  # Ingress 请求和响应带宽
+  # 下面的 5 MiB/s 与 10 MiB/s 是初始阈值，上线后应根据正常峰值和出口容量调整。
+  - name: "Ingress-NGINX 带宽与流量"
+    interval: 1m
+    limit: 100
+    rules:
+      # 告警十：Ingress 响应带宽过高
+      - alert: "Ingress 响应带宽过高"
+        expr: |
+          (
+            sum by (cluster, backend_namespace, ingress, service) (
+              rate(
+                {job="ingress-nginx/controller"}
+                | json bytes_value="body_bytes_sent"
+                | unwrap bytes_value
+                | __error__=""
+                [5m]
+              )
+            )
+            / 1024 / 1024
+          ) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+          component: ingress-nginx
+        annotations:
+          alert_name_zh: "Ingress 响应带宽过高"
+          severity_zh: "警告"
+          team_zh: "平台运维团队"
+          component_zh: "Ingress-NGINX 流量"
+          summary: "Ingress Service 响应带宽持续超过 10 MiB/s"
+          description: "集群={{ $labels.cluster }}，Namespace={{ $labels.backend_namespace }}，Ingress={{ $labels.ingress }}，Service={{ $labels.service }}；最近 5 分钟平均响应正文带宽持续超过 10 MiB/s。当前值={{ $value }} MiB/s。"
+          runbook: "检查请求量、大文件下载、异常客户端 IP、热点 URI、缓存策略以及出口带宽使用情况；body_bytes_sent 不包含响应 Header 和底层网络开销。"
+
+      # 告警十一：Ingress 请求带宽过高
+      - alert: "Ingress 请求带宽过高"
+        expr: |
+          (
+            sum by (cluster, backend_namespace, ingress, service) (
+              rate(
+                {job="ingress-nginx/controller"}
+                | json bytes_value="request_length"
+                | unwrap bytes_value
+                | __error__=""
+                [5m]
+              )
+            )
+            / 1024 / 1024
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+          component: ingress-nginx
+        annotations:
+          alert_name_zh: "Ingress 请求带宽过高"
+          severity_zh: "警告"
+          team_zh: "平台运维团队"
+          component_zh: "Ingress-NGINX 流量"
+          summary: "Ingress Service 请求带宽持续超过 5 MiB/s"
+          description: "集群={{ $labels.cluster }}，Namespace={{ $labels.backend_namespace }}，Ingress={{ $labels.ingress }}，Service={{ $labels.service }}；最近 5 分钟平均请求带宽持续超过 5 MiB/s。当前值={{ $value }} MiB/s。"
+          runbook: "检查大文件上传、批量接口、异常客户端 IP、热点 URI、请求大小和流量来源；request_length 包含请求行、请求 Header 和请求正文。"
+
+  # 日志采集链路健康状态
+  - name: "Ingress-NGINX 日志采集链路"
+    interval: 1m
+    limit: 10
+    rules:
+      # 如果生产环境可能连续 15 分钟完全没有请求，请删除或放宽此规则。
+      # absent_over_time 已经覆盖 15 分钟窗口，因此仅额外等待 1 分钟以减少瞬时抖动。
+      # 告警十二：Ingress 日志采集链路中断
+      - alert: "Ingress 日志采集链路中断"
+        expr: |
+          absent_over_time({job="ingress-nginx/controller"}[15m]) == 1
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+          component: observability
+        annotations:
+          alert_name_zh: "Ingress 日志采集链路中断"
+          severity_zh: "警告"
+          team_zh: "平台运维团队"
+          component_zh: "日志采集链路"
+          summary: "Loki 连续约 15 分钟没有收到 ingress-nginx 日志"
+          description: "可能是 Alloy 采集失败、Loki 写入失败、Ingress Controller 异常，或生产环境确实没有流量。"
+          runbook: "检查 Alloy DaemonSet、loki.write 状态、Loki /ready、容器日志和 /data/loki 磁盘空间。"

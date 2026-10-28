@@ -1,0 +1,195 @@
+#+title: 生产环境方案
+#+subtitle: AWS 新加坡 + 阿里云香港
+#+startup: content indent
+#+options: toc:2 num:nil
+
+* 生产环境方案（AWS 新加坡 + 阿里云香港）
+本文是*方案与依据*，不是操作手册。重建操作看 =README.org=。
+文中标注「实测」的数字来自本测试环境（5 节点 VM + MinIO），
+量级不同但*比例关系*和*配置位置*可以直接参考；标注「需按量级定」的必须自己压测。
+
+** 架构前提
+#+begin_example
+  阿里云香港                      AWS 新加坡
+  ┌──────────┐   跨云跨境公网    ┌─────────────────────────┐
+  │ Grafana  │ ────────────────> │ 只读网关 → Loki 读组件  │
+  └──────────┘   ← 查询响应      │          ↕              │
+                                 │         S3（同区域）    │
+                                 └─────────────────────────┘
+#+end_example
+
+*只有 Grafana → Loki 这一段跨区域。* Loki 与 S3 同在新加坡，
+它们之间的流量不走公网、不计跨区域传输费——所以优化重点不在「减少 Loki 读 S3 的量」，
+而在「减少回传给香港的字节数」和「控制 S3 的请求次数」。
+
+--------------
+
+** 一、跨区域查询：压缩是第一优先级
+日志 JSON 高度重复（标签名、字段名反复出现），压缩比远高于一般数据。
+*实测压缩比 10~13x，开启前后 179,954 → 23,422 字节。*
+
+跨境链路上，这直接等于：阿里云侧入口流量 ÷10、传输时间 ÷10。
+
+两处都要开，位置和坑见 =README.org= 的「传输与存储压缩」和坑位 41：
+
+#+begin_src yaml
+# values-distributed.yaml —— 注意是 frontend 段，放进 server 会让所有组件 CrashLoop
+loki:
+  frontend:
+    compress_responses: true
+#+end_src
+
+#+begin_src nginx
+# 只读网关。gzip_proxied any 最容易漏——默认 off 时，
+# 带 Via 头的代理响应一律不压，而网关本身就是反向代理
+gzip on;
+gzip_types application/json text/plain;
+gzip_comp_level 4;
+gzip_min_length 1k;
+gzip_proxied any;
+gzip_vary on;
+#+end_src
+
+*** 还能再做的
+- *Grafana 侧限制查询范围*。=max_query_length=、=max_entries_limit_per_query=
+  是跨境链路的实际闸门——一个没限制的 ={job=~".+"}= 查 7 天，能把几个 GB 压缩后
+  仍有几百 MB 的数据拖过海。本环境是 =721h= / =10000=，生产要按能接受的
+  单次响应大小反推。
+- *results_cache 命中就不用再跨区域算一次*。Grafana 看板自动刷新时
+  反复发同样的查询，结果缓存直接决定有多少请求真的打到后端。
+- *不建议*把 query-frontend 单独放到香港。它要和 querier、ingester 大量通信，
+  等于把跨区域链路从「一次响应」变成「每个子查询一个往返」，适得其反。
+
+--------------
+
+** 二、S3 成本：请求数往往比存储费更伤
+同区域没有传输费，但 *GET/PUT 按次计费*（GET 约 $0.0004/1000）。
+Loki 的查询会被切片放大请求数：
+
+#+begin_example
+split_queries_by_interval: 15m   ->  查 24 小时 = 96 个子查询
+                                     每个子查询各自去取它需要的 chunk
+#+end_example
+
+量级上去后这个乘数很可观。三个旋钮：
+
+| 旋钮                                  | 当前值   | 调大的收益                        | 调大的代价                              |
+|---------------------------------------+----------+-----------------------------------+-----------------------------------------|
+| =split_queries_by_interval=           | 15m      | 子查询数下降，S3 请求数同比例下降 | 并行度下降，单个子查询更慢              |
+| =chunk_target_size=                   | 1.5MB    | 对象数变少，PUT/GET 次数下降      | 查询读放大（取一条日志要拉更大的块）    |
+| =max_chunk_age= / =chunk_idle_period= | 2h / 30m | chunk 更满，对象更少              | ingester 内存占用上升，数据可见延迟变大 |
+
+*推荐做法*：先用 CloudWatch 看 S3 的 =AllRequests= 指标摸清真实请求量，
+再决定调哪个。盲调 =split= 容易把查询延迟搞坏。
+
+*** chunk 编码
+当前 =chunk_encoding: gzip=，*实测压缩率 5.38x*。
+
+生产建议换 *zstd*：压缩率与 gzip 相当或更好，但解压快得多——
+省存储费的同时还省查询时的 CPU 和延迟。改了只影响新写入的 chunk，
+Loki 能读混合编码，*不需要迁移历史数据*。
+
+*** 生命周期
+Loki 的 =retention_period= 负责删，S3 生命周期规则负责*降冷*。两者配合：
+
+- 热数据（最近 N 天，频繁查）留 S3 Standard
+- 温数据转 Standard-IA
+- 再老的直接让 Loki retention 删掉，不要转 Glacier——
+  Glacier 取回有延迟和费用，而 Loki 查询是同步的，取不回来就是查询失败
+
+本环境已有分级保留的例子（events / systemd 7 天、业务日志 28 天），
+见 =README.org= 的「保留策略（分级）」。
+
+--------------
+
+** 三、查询延迟（新加坡内部）
+*** 缓存要按量级重算
+本环境 =chunksCache.allocatedMemory: 256=（MB）是为 3.2Gi 的小节点压下来的，
+*生产必须放大*。推算思路：
+
+#+begin_example
+热数据量 ≈ 活跃 stream 数 × 每 stream 的 chunk 大小 × 查询窗口内的 chunk 数
+#+end_example
+
+目标是让*最常查的时间窗*（通常是最近 1~6 小时）能基本装进缓存。
+本环境实测 chunks-cache 命中率 *99.84%*，S3 直接请求几乎为 0——
+这个命中率是查询延迟稳定的关键，生产要拿同样的指标
+（=loki_cache_hits= / =loki_cache_fetched_keys=）来验证容量够不够。
+
+*** 并行度
+=max_query_parallelism: 16= / =tsdb_max_query_parallelism: 128= 要和
+querier 副本数、CPU 配额匹配。并行度开太大而 querier 不够，
+请求只会堆在 query-scheduler 队列里，延迟反而上升。
+
+*** 标签基数是真正的天花板
+数据量可以靠加机器扛，*标签基数不行*。本环境踩过两次：
+
+- =session-NN.scope=：每次 SSH 登录产生一个新的 systemd scope，
+  =app= 标签就多一个值，只增不减（实测 74 个 app 里 62 个是这个）
+- Gateway 的 =host=：取自请求 Host 头，*任何人都能任意制造*
+
+生产上线前务必审一遍：有没有标签的取值来自*外部可控输入*。
+来自外部的要么不做索引标签（走 =| json= 解析），要么配基数告警
+（本环境的 =GatewayHostCardinalityHigh= 就是这个用途）。
+
+--------------
+
+** 三点五、NGF 的 values 怎么合并
+生产上会同时有几类改动落在 NGF 的 values 里，它们*各有各的键，不要试图合并成一个*。
+判断某个 patch 该放哪，看你要改的字段最终属于哪个 K8s 对象：
+
+| 要改什么                                        | 键                      | 渲染到                                                   | 类型                |
+|-------------------------------------------------+-------------------------+----------------------------------------------------------+---------------------|
+| LB 的 annotations（NLB/子网/proxy-protocol 等） | =nginx.service.patches= | =NginxProxy.spec.kubernetes.service.patches=             | 作用于 *Service*    |
+| volumes / volumeMounts / env（如时区）          | =nginx.patches=         | =...kubernetes.deployment.patches=（同时写进 daemonSet） | 作用于 *Deployment* |
+| nginx 自身行为（日志格式、客户端 IP 重写等）    | =nginx.config.*=        | 整段 =toYaml= 进 =NginxProxy.spec=                       | NginxProxy spec     |
+
+完整可用的示例见 =values-ngf-merged-example.yaml=（已用 =helm template= 验证过渲染）。
+
+*** 开了 NLB 的 proxy-protocol，必须配接收侧
+=service.beta.kubernetes.io/aws-load-balancer-proxy-protocol: "*"= 只是让 *NLB 往外发*
+PROXY v2 头。nginx 如果没配着收，会把那段二进制当成 HTTP 请求行解析，*直接 400 或断连*。
+
+配套配置在 =nginx.config.rewriteClientIP=：
+
+#+begin_src yaml
+nginx:
+  config:
+    rewriteClientIP:
+      mode: ProxyProtocol        # 让 NGF 在 listen 上加 proxy_protocol
+      trustedAddresses:          # 必填：mode 设了而它为空，NGINX 不会重写客户端 IP
+      - type: CIDR
+        value: 10.0.0.0/16       # 填 NLB 子网的实际 CIDR
+#+end_src
+
+两个容易踩的点：
+
+- *位置在 =nginx.config= 下，和 =logging= 平级。* 放到 =nginx= 下会被*静默忽略*——
+  =helm template= 出来是 =rewriteClientIP: null=，不报错，很难发现。
+  （我自己第一次就放错了，靠渲染结果才看出来。）
+- *=trustedAddresses= 别图省事写 =0.0.0.0/0=*，那等于谁都能伪造来源 IP。
+
+不配 =rewriteClientIP= 的另一个后果：access log 里的 =remote_addr= 全是 NLB 的内网地址，
+=host= / 客户端 IP 维度的分析和告警全部失真——而这套栈的 Gateway 看板正好重度依赖这两个字段。
+
+** 四、上线前的检查清单
+| 项           | 怎么验                                                                          |
+|--------------+---------------------------------------------------------------------------------|
+| 压缩真的生效 | =curl -H 'Accept-Encoding: gzip' ... -D -= 看有没有 =content-encoding: gzip=    |
+| 缓存命中率   | =loki_cache_hits= / =loki_cache_fetched_keys=，目标 >95%                        |
+| S3 请求量    | CloudWatch 的 =AllRequests=，换算成月度账单                                     |
+| 标签基数     | =count(count by (<标签>) (count_over_time({...}[1h])))=，盯住来自外部输入的那些 |
+| 查询护栏     | 故意发一个超大范围查询，确认被 =max_query_length= 挡住而不是拖垮集群            |
+| 配置键写对了 | 任何一个拼错的键都会让*所有组件*拒绝启动（见坑位 41），改完先看 Pod 状态        |
+
+--------------
+
+** 五、几个容易走错的方向
+- *不要为了省 S3 流量在香港放缓存*。Loki↔S3 同区域本来就没有传输费，
+  跨区域的是查询响应，缓存该放在 Loki 侧（chunks/results cache），不是 Grafana 侧。
+- *不要开组件间的 gRPC 压缩*（=grpc_compression=）。组件都在新加坡同一个集群内网，
+  压缩省下的带宽换不回 CPU。
+- *不要用 =avg()= / =max()= 去「修复」多序列的分位数面板*。
+  那是「多个流各自 P95 再平均」，统计上就是错的，要用 =by ()=（见坑位 40）。
+- *不要只看 =alloy validate= 就认为配置没问题*。它不校验 LogQL selector 和
+  template 语法，reload 失败时 Alloy 会静默回落到旧配置继续跑（见坑位 39）。

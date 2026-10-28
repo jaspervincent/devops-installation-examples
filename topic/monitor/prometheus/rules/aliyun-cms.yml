@@ -1,0 +1,17 @@
+groups:
+  - name: aliyun-cms-enrich
+    interval: 180s
+    rules:
+      - record: aliyun:rds_info
+        expr: |
+          label_replace(label_replace(
+            label_replace(aliyun_meta_rds_info, "instanceId", "$1", "DBInstanceId", "(.*)"),
+            "project", "bd-java", "RegionId", "ap-southeast-1"),
+            "project", "bd-go", "RegionId", "cn-hongkong")
+
+      - record: aliyun:redis_info
+        expr: |
+          label_replace(label_replace(
+            label_replace(aliyun_meta_redis_info, "baseId", "$1", "InstanceId", "(.*)"),
+            "project", "bd-java", "RegionId", "ap-southeast-1"),
+            "project", "bd-go", "RegionId", "cn-hongkong")

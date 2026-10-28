@@ -1,0 +1,1157 @@
+{
+  "uid": "loki-dev-troubleshoot",
+  "title": "研发排障 - 实时日志",
+  "description": "给研发快速定位服务问题用：选服务 -> 看直方图定位时间点 -> 读日志流。默认「范围=业务服务」，已排除 loki/kube-system 等基础设施日志（它们占全部日志的 96%）。Java 异常堆栈已在采集端合并为单条记录。系统服务(kubelet/containerd 等)把范围切成「含系统日志」。",
+  "tags": [
+    "loki",
+    "logs",
+    "dev",
+    "troubleshoot"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "editable": true,
+  "templating": {
+    "list": [
+      {
+        "name": "project",
+        "label": "项目",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "project",
+          "refId": "project",
+          "type": 1
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "environment",
+        "label": "环境",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "environment",
+          "refId": "environment",
+          "type": 1,
+          "stream": "{project=~\"$project\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "scope",
+        "label": "范围",
+        "type": "custom",
+        "query": "业务服务 : ^(loki|kube-system|alloy|local-path-storage|_system)$, 含系统日志 : ^(loki|kube-system|alloy|local-path-storage)$, 全部 : ^$",
+        "options": [
+          {
+            "selected": true,
+            "text": "业务服务",
+            "value": "^(loki|kube-system|alloy|local-path-storage|_system)$"
+          },
+          {
+            "selected": false,
+            "text": "含系统日志",
+            "value": "^(loki|kube-system|alloy|local-path-storage)$"
+          },
+          {
+            "selected": false,
+            "text": "全部",
+            "value": "^$"
+          }
+        ],
+        "current": {
+          "selected": true,
+          "text": "业务服务",
+          "value": "^(loki|kube-system|alloy|local-path-storage|_system)$"
+        },
+        "multi": false,
+        "includeAll": false,
+        "refresh": 0,
+        "skipUrlSync": false,
+        "description": "默认「业务服务」排除 loki / kube-system / alloy 等基础设施命名空间和宿主机日志——它们占全部日志的 96%，不排掉的话开发者找自己服务的日志像大海捞针。要看基础设施切「含系统日志」或「全部」。"
+      },
+      {
+        "name": "source",
+        "label": "日志来源",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "source",
+          "refId": "source",
+          "type": 1,
+          "stream": "{project=~\"$project\", environment=~\"$environment\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "namespace",
+        "label": "命名空间",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "namespace",
+          "refId": "namespace",
+          "type": 1,
+          "stream": "{project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace!~\"$scope\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "app",
+        "label": "服务",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "efzm3ndgkowsga"
+        },
+        "query": {
+          "label": "app",
+          "refId": "app",
+          "type": 1,
+          "stream": "{project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\"}"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "search",
+        "label": "关键字",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "description": "在日志正文里搜索，留空则不过滤。例：orderId=123"
+      },
+      {
+        "name": "level",
+        "label": "级别",
+        "type": "custom",
+        "query": "trace,debug,info,notice,warn,error,critical,fatal,unknown",
+        "options": [
+          {
+            "selected": false,
+            "text": "trace",
+            "value": "trace"
+          },
+          {
+            "selected": false,
+            "text": "debug",
+            "value": "debug"
+          },
+          {
+            "selected": false,
+            "text": "info",
+            "value": "info"
+          },
+          {
+            "selected": false,
+            "text": "notice",
+            "value": "notice"
+          },
+          {
+            "selected": false,
+            "text": "warn",
+            "value": "warn"
+          },
+          {
+            "selected": false,
+            "text": "error",
+            "value": "error"
+          },
+          {
+            "selected": false,
+            "text": "critical",
+            "value": "critical"
+          },
+          {
+            "selected": false,
+            "text": "fatal",
+            "value": "fatal"
+          },
+          {
+            "selected": false,
+            "text": "unknown",
+            "value": "unknown"
+          }
+        ],
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".+",
+        "refresh": 0,
+        "skipUrlSync": false,
+        "description": "按 Loki 推断的 detected_level 过滤，覆盖全部日志。不用索引标签 level：它只覆盖约 5% 的日志，用它筛会让绝大多数 Pod 日志消失。"
+      },
+      {
+        "name": "rate_window",
+        "label": "速率窗口",
+        "type": "interval",
+        "query": "1m,5m,10m,30m,1h",
+        "auto": false,
+        "refresh": 0,
+        "current": {
+          "selected": true,
+          "text": "5m",
+          "value": "5m"
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "1m",
+            "value": "1m"
+          },
+          {
+            "selected": true,
+            "text": "5m",
+            "value": "5m"
+          },
+          {
+            "selected": false,
+            "text": "10m",
+            "value": "10m"
+          },
+          {
+            "selected": false,
+            "text": "30m",
+            "value": "30m"
+          },
+          {
+            "selected": false,
+            "text": "1h",
+            "value": "1h"
+          }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "日志速率",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum(rate({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  |= \"$search\" [$rate_window]))",
+          "queryType": "range",
+          "legendFormat": "条/秒"
+        }
+      ],
+      "description": "当前筛选条件下的日志速率。受「范围」影响——默认不含基础设施日志。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 2,
+      "title": "错误数",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum(count_over_time({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  |= \"$search\" |~ `(?i)(^|[^a-z])(error|fatal|panic|exception)([^a-z]|$)` [$__range]))",
+          "queryType": "instant",
+          "legendFormat": "条"
+        }
+      ],
+      "description": "仪表盘时间范围内含 error / fatal / panic / exception 的日志条数。刻意不做阈值着色：这个数随时间范围线性变化，固定阈值在改范围时必然失真。判断是否异常看右边的「错误占比」。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 3,
+      "title": "错误占比",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum(count_over_time({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\" |= \"$search\" |~ `(?i)(^|[^a-z])(error|fatal|panic|exception)([^a-z]|$)` [$__range])) / sum(count_over_time({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\" |= \"$search\" [$__range])) * 100",
+          "queryType": "instant",
+          "legendFormat": "%"
+        }
+      ],
+      "description": "错误日志占全部日志的百分比。比「错误数」更适合判断是否异常——比例不随时间范围变化，而计数会。阈值按实测基线定：本环境常态 9.9~10.1%（5m/30m/1h/6h 四个窗口都一样，demo 应用按固定比例造错误），所以 20% 才转橙、40% 转红。**换到真实环境必须重新量基线再定**，见坑位 19。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "noValue": "0",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 20
+              },
+              {
+                "color": "red",
+                "value": 40
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 4,
+      "title": "涉及服务数",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "count(sum by (app) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  |= \"$search\" [$__range])))",
+          "queryType": "instant",
+          "legendFormat": "个"
+        }
+      ],
+      "description": "仪表盘时间范围内出现过日志的服务数量。具体是哪些服务，展开「服务与级别分布」折叠行。",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 5,
+      "title": "日志量（按级别）",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "sum by (detected_level) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  |= \"$search\" [$__interval]))",
+          "queryType": "range",
+          "legendFormat": "{{detected_level}}"
+        }
+      ],
+      "description": "按级别堆叠的日志条数直方图，分桶宽度自动跟随视图（$__interval）。先在这里看出几点开始异常，再往下读日志——这是读日志的标准顺序，直接翻日志流很容易错过起始时间点。不受顶部「速率窗口」影响：那是滑动窗口，会把直方图糊成一整块。",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "interval": "30s"
+    },
+    {
+      "id": 10,
+      "title": "实时日志流",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "efzm3ndgkowsga"
+      },
+      "gridPos": {
+        "h": 18,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "expr": "{project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  |= \"$search\"",
+          "queryType": "range"
+        }
+      ],
+      "description": "顶部选服务、选级别、填关键字即可。Java 异常堆栈已由 Alloy 合并为单条记录，展开可看完整调用栈。点左侧时间戳展开标签详情，里面的字段可直接点击做过滤。",
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "错误专区",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "panels": [
+        {
+          "id": 20,
+          "title": "错误日志流",
+          "type": "logs",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 14,
+            "w": 16,
+            "x": 0,
+            "y": 28
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "{project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  |= \"$search\" |~ `(?i)(^|[^a-z])(error|fatal|panic|exception)([^a-z]|$)`",
+              "queryType": "range"
+            }
+          ],
+          "description": "按日志正文匹配 error / fatal / panic / exception。和顶部「级别」下拉是两条不同的路子：级别走 detected_level（Loki 服务端推断），这里走正文正则，两者可以叠加。",
+          "options": {
+            "showTime": true,
+            "showLabels": false,
+            "wrapLogMessage": true,
+            "prettifyLogMessage": false,
+            "sortOrder": "Descending",
+            "enableLogDetails": true,
+            "dedupStrategy": "none"
+          }
+        },
+        {
+          "id": 21,
+          "title": "错误速率（按服务）",
+          "type": "timeseries",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 16,
+            "y": 28
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "sum by (app) (rate({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  |= \"$search\" |~ `(?i)(^|[^a-z])(error|fatal|panic|exception)([^a-z]|$)` [$rate_window]))",
+              "queryType": "range",
+              "legendFormat": "{{app}}"
+            }
+          ],
+          "description": "哪个服务在报错、什么时候开始的",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 15,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "normal"
+                }
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 22,
+          "title": "Java 异常类型 Top 10",
+          "type": "timeseries",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 8,
+            "x": 16,
+            "y": 35
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "topk(10, sum by (exception) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  |~ `Exception|Error` | regexp `(?P<exception>[\\w.]+(?:Exception|Error))` | exception != \"\" [$rate_window])))",
+              "queryType": "range",
+              "legendFormat": "{{exception}}"
+            }
+          ],
+          "description": "从日志里正则提取异常类名后统计。可快速看出主要故障类型",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 15,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "normal"
+                }
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 500,
+      "type": "row",
+      "title": "服务与级别分布",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 28
+      },
+      "panels": [
+        {
+          "id": 30,
+          "title": "涉及服务列表",
+          "type": "table",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 16,
+            "x": 0,
+            "y": 29
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "topk(30, sum by (app, namespace, source) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  |= \"$search\" [$__range])))",
+              "queryType": "instant"
+            }
+          ],
+          "description": "命中的服务，按日志条数倒序，最多 30 行。带上 source 是因为同一个「服务」下拉里混着应用容器和宿主机 unit，只看名字分不清 kubelet 是哪一种。",
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false,
+              "reducer": [
+                "sum"
+              ],
+              "fields": ""
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": []
+          },
+          "transformations": [
+            {
+              "id": "labelsToFields",
+              "options": {
+                "mode": "columns"
+              }
+            },
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "indexByName": {
+                  "Time": 0,
+                  "app": 1,
+                  "namespace": 2,
+                  "source": 3,
+                  "Value #A": 4,
+                  "Value": 5
+                },
+                "renameByName": {
+                  "app": "服务",
+                  "namespace": "命名空间",
+                  "source": "来源",
+                  "Value #A": "日志条数",
+                  "Value": "日志条数"
+                }
+              }
+            },
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
+                  {
+                    "field": "日志条数",
+                    "desc": true
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": 31,
+          "title": "按级别分布",
+          "type": "piechart",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 29
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "sum by (detected_level) (count_over_time({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  |= \"$search\" [$__range]))",
+              "queryType": "range",
+              "legendFormat": "{{detected_level}}"
+            }
+          ],
+          "description": "整个时间范围的级别构成。随时间怎么变看第一屏的直方图。",
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "right"
+            },
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 400,
+      "type": "row",
+      "title": "Nginx 访问日志分析",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 29
+      },
+      "panels": [
+        {
+          "id": 40,
+          "title": "HTTP 状态码分布",
+          "type": "timeseries",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 30
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "sum by (status) (rate({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  | pattern `<ip> - <_> [<_>] \"<method> <path> <_>\" <status> <size> <_> \"<ua>\" <rt>` | status != \"\" |= \"$search\" [$rate_window]))",
+              "queryType": "range",
+              "legendFormat": "{{status}}"
+            }
+          ],
+          "description": "用 LogQL 的 pattern 解析器解析 combined 格式。选非 nginx 服务时这里是空面板（被 status 非空过滤掉），而不是一条压扁一切的噪声线——后者是修复之前的行为，见 NGINX 的注释。",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 15,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "normal"
+                }
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 41,
+          "title": "5xx 错误请求",
+          "type": "logs",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 16,
+            "x": 8,
+            "y": 30
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "{project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  | pattern `<ip> - <_> [<_>] \"<method> <path> <_>\" <status> <size> <_> \"<ua>\" <rt>` | status != \"\" |= \"$search\" | status =~ \"5..\"",
+              "queryType": "range"
+            }
+          ],
+          "description": "直接列出所有 5xx 请求原文",
+          "options": {
+            "showTime": true,
+            "showLabels": false,
+            "wrapLogMessage": true,
+            "prettifyLogMessage": false,
+            "sortOrder": "Descending",
+            "enableLogDetails": true,
+            "dedupStrategy": "none"
+          }
+        },
+        {
+          "id": 42,
+          "title": "访问量 Top 10 路径",
+          "type": "timeseries",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 38
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "topk(10, sum by (path) (rate({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  | pattern `<ip> - <_> [<_>] \"<method> <path> <_>\" <status> <size> <_> \"<ua>\" <rt>` | status != \"\" |= \"$search\" [$rate_window])))",
+              "queryType": "range",
+              "legendFormat": "{{path}}"
+            }
+          ],
+          "description": "哪些接口被访问得最多",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 15,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "normal"
+                }
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 43,
+          "title": "错误率 Top 10 路径",
+          "type": "timeseries",
+          "datasource": {
+            "type": "loki",
+            "uid": "efzm3ndgkowsga"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 38
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "efzm3ndgkowsga"
+              },
+              "expr": "topk(10, sum by (path) (rate({project=~\"$project\", environment=~\"$environment\", source=~\"$source\", namespace=~\"$namespace\", namespace!~\"$scope\", app=~\"$app\"} | detected_level=~\"$level\"  | pattern `<ip> - <_> [<_>] \"<method> <path> <_>\" <status> <size> <_> \"<ua>\" <rt>` | status != \"\" |= \"$search\" | status =~ \"[45]..\" [$rate_window])))",
+              "queryType": "range",
+              "legendFormat": "{{path}}"
+            }
+          ],
+          "description": "只统计 4xx/5xx，定位有问题的接口",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "lineWidth": 1,
+                "fillOpacity": 15,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "normal"
+                }
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 600,
+      "type": "row",
+      "title": "说明 / 怎么读这个看板",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "panels": [
+        {
+          "id": 91,
+          "type": "text",
+          "title": "",
+          "transparent": true,
+          "gridPos": {
+            "h": 14,
+            "w": 24,
+            "x": 0,
+            "y": 31
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "### 这个看板回答什么\n\n**我的服务现在在报什么、从什么时候开始的。**\n\n顶部选服务 → 看直方图确定时间点 → 在日志流里读原文。\n\n### 顶部过滤器\n\n| 变量 | 说明 |\n|---|---|\n| 范围 | 默认「业务服务」，**排除 loki / kube-system / alloy 和宿主机日志** |\n| 来源 | `pod` = 应用容器，`systemd` = 宿主机服务（kubelet / containerd 等） |\n| 服务 | 容器取 Pod 的 `app` 标签；系统服务取 unit 名去掉 `.service` |\n| 级别 | 筛的是 `detected_level`（Loki 推断，覆盖 100%），不是索引标签 `level` |\n| 关键字 | 在日志正文里搜，留空不过滤。例：`orderId=12345` |\n\n### 为什么默认排除基础设施\n\n实测近 6 小时：`loki` 自身 49.6 万条，而 `order-service` 2.1 万、\n`web-gateway` 2.1 万——**基础设施日志占 96%**。不排掉的话，\n找自己服务的日志像大海捞针。要看基础设施，把「范围」切成「全部」。\n\n### 两个容易误解的地方\n\n- **Java 异常堆栈已由 Alloy 合并成单条记录**，展开能看到完整调用栈，\n  不会被拆成几十条。\n- **Nginx 专区需要选中 nginx 类服务**（如 `web-gateway`）。查询带\n  `| status != \"\"`，非 nginx 格式的日志会被自然过滤掉，所以选错服务\n  是空面板而不是一堆噪声。\n"
+          }
+        }
+      ]
+    }
+  ]
+}

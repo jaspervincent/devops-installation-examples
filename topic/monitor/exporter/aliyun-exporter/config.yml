@@ -1,0 +1,87 @@
+rate_limit: 5      # 每秒 API 调用上限，云监控有限流，别调大
+pool_size: 10
+
+credential: {}     # 留空，由环境变量注入
+
+metrics:
+  acs_rds_dashboard:
+    # —— 资源水位（通用，不分引擎）——
+    - {name: CpuUsage,                   period: 60}
+    - {name: MemoryUsage,                period: 60}
+    - {name: DiskUsage,                  period: 60}
+    - {name: IOPSUsage,                  period: 60}
+    - {name: ConnectionUsage,            period: 60}
+    - {name: DataDelay,                  period: 60}
+    # —— 吞吐 ——
+    - {name: MySQL_QPS,                  period: 60}
+    - {name: MySQL_TPS,                  period: 60}
+    # —— 会话 / 连接 ——
+    - {name: MySQL_ThreadsConnected,     period: 60}
+    - {name: MySQL_ThreadsRunning,       period: 60}
+    - {name: MySQL_ActiveSessions,       period: 60}
+    # —— 慢查询 ——
+    - {name: MySQL_SlowQueries,          period: 60}
+    # —— 网络 ——
+    - {name: MySQL_NetworkInNew,         period: 60}
+    - {name: MySQL_NetworkOutNew,        period: 60}
+    # —— 空间占用 ——
+    - {name: MySQL_InstanceDiskSize,     period: 60}
+    - {name: MySQL_DataDiskSize,         period: 60}
+    - {name: MySQL_LogDiskSize,          period: 60}
+    - {name: MySQL_TmpDiskSize,          period: 60}
+    # —— InnoDB Buffer Pool ——
+    - {name: MySQL_IbufReadHit,          period: 60}
+    - {name: MySQL_IbufUseRatio,         period: 60}
+    - {name: MySQL_IbufDirtyRatio,       period: 60}
+    # —— InnoDB 行操作 ——
+    - {name: MySQL_InnoDBRowRead,        period: 60}
+    - {name: MySQL_InnoDBRowInsert,      period: 60}
+    - {name: MySQL_InnoDBRowUpdate,      period: 60}
+    - {name: MySQL_InnoDBRowDelete,      period: 60}
+    # —— InnoDB 物理 IO ——
+    - {name: MySQL_InnoDBDataRead,       period: 60}
+    - {name: MySQL_InnoDBDataWritten,    period: 60}
+    # —— 锁 ——
+    - {name: MySQL_InnoDBRowLockTimePs,  period: 60}
+    - {name: MySQL_MDLLockSession,       period: 60}
+    # —— 临时表 ——
+    - {name: MySQL_TempDiskTableCreates, period: 60}
+    # —— 主从线程状态 ——
+    - {name: MySQL_SlaveIORunning,       period: 60}
+    - {name: MySQL_SlaveSQLRunning,      period: 60}
+
+  acs_kvstore:
+    # —— 通用（一次调用覆盖集群版和标准版两个实例）——
+    - {name: CpuUsage,                   period: 60}
+    - {name: MemoryUsage,                period: 60}
+    - {name: ConnectionUsage,            period: 60}
+    - {name: UsedMemory,                 period: 60}
+    - {name: UsedConnection,             period: 60}
+    - {name: UsedQPS,                    period: 60}
+    - {name: IntranetIn,                 period: 60}
+    - {name: IntranetOut,                period: 60}
+    - {name: IntranetInRatio,            period: 60}
+    - {name: IntranetOutRatio,           period: 60}
+    - {name: FailedCount,                period: 60}
+    # —— 集群版专属（java-redis / tair.rdb.cluster.sharding.common）——
+    - {name: ShardingHitRate,                period: 60}
+    - {name: ShardingKeys,                   period: 60}
+    - {name: ShardingGetQps,                 period: 60}
+    - {name: ShardingPutQps,                 period: 60}
+    - {name: ShardingAvgRt,                  period: 60}
+    - {name: ShardingSlowlogCount,           period: 60}
+    - {name: ShardingEvictedKeysPerSecond,   period: 60}
+    - {name: ShardingExpiredKeysPerSecond,   period: 60}
+    # —— 标准版专属（hk-go-m-redis / tair.rdb.1g）——
+    - {name: StandardHitRate,                period: 60}
+    - {name: StandardKeys,                   period: 60}
+    - {name: StandardGetQps,                 period: 60}
+    - {name: StandardPutQps,                 period: 60}
+    - {name: StandardAvgRt,                  period: 60}
+    - {name: StandardSlowlogCount,           period: 60}
+    - {name: StandardEvictedKeysPerSecond,   period: 60}
+    - {name: StandardExpiredKeysPerSecond,   period: 60}
+
+info_metrics:
+  - rds
+  - redis

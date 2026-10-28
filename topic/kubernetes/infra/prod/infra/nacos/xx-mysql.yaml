@@ -1,0 +1,45 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xx-mysql
+  namespace: infra
+  labels:
+    app: xx-mysql
+spec:
+  clusterIP: None
+  ports:
+  - name: mysql
+    port: 3306
+    targetPort: 3306
+---
+#apiVersion: v1
+#kind: Endpoints #1.33前
+#metadata:
+#  name: xx-mysql
+#  namespace: infra
+#subsets:
+#- addresses:
+#  - ip: 10.0.224.4
+#  ports:
+#  - port: 3306
+
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  labels:
+    app: xx-mysql
+    kubernetes.io/service-name: xx-mysql
+  name: xx-mysql
+  namespace: infra
+addressType: IPv4
+ports:
+- name: http
+  protocol: TCP
+  port: 3306
+endpoints:
+- addresses:
+  - 10.0.224.4
+  conditions:
+    ready: true
+  #zone: ap-south-1a

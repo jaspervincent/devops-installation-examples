@@ -1,0 +1,15 @@
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: default-pool
+  namespace: kube-system
+spec:
+  #allowFirstLastIPs: No # 排队网络地址和广播地址
+  blocks:
+  # 使用起止 IP 范围，避开节点 IP
+  - start: "10.0.0.10"
+    stop: "10.0.0.50"
+  # 可选：可以添加多个范围
+  #- start: "10.0.0.220"
+  #  stop: "10.0.0.250"
+  #- cidr: "10.0.0.0/24"

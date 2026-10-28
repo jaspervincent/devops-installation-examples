@@ -1,0 +1,435 @@
+# Business Domain
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    role: alert-rules
+    release: prometheus
+  namespace: monitoring
+  name: domain-rules
+spec:
+  groups:
+  - name: Domain-SSL-Cert # 证书到期告警
+    interval: 1d
+    rules:
+    - alert: Domain_ssl_cert_expiry_less_than_30days
+      annotations:
+        summary: "ssl cert expiry less than 30 days"
+        description: 'warning | Current {{ $labels.instance }} value = {{ $value| printf "%.1f" }}d. | [Duration Time: 1d]'
+      expr: (probe_ssl_earliest_cert_expiry{} - time()) /60/60/24  < 20
+      #for: 1m
+      labels:
+        severity: warning
+        team: domain-alert
+  - name: Domain-URL # 网站不可用告警
+    interval: 1m
+    rules:
+    - alert: Domain_url_not_available
+      annotations:
+        summary: "url not available"
+        description: "warning | Current {{$labels.instance}} http status = {{ $value }}. | [Duration Time: 3m]"
+      expr: probe_http_status_code{} != 200
+      labels:
+        severity: warning
+        team: domain-alert
+    - alert: Domain_rt_is_high # 网站响应时长过长  
+      annotations:
+        summary: "rt is high"
+        description: "warning | api: {{ $labels.instance }} rt is too high, Current value= {{ $value }}. | [Duration Time: 3m]"
+      expr: probe_http_duration_seconds{} > 10 
+      labels:
+        severity: warning
+        team: domain-alert
+---
+# Infra
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: infra-rules
+  namespace: monitoring
+  labels:
+    role: alert-rules
+    release: prometheus
+spec:
+  groups:
+#AWS network: NATGateway ALB NLB
+## NATGateway
+  - name: Infra-NatGateway
+    rules:
+    - alert: Infra_NatGateway_Packets_Drop
+      annotations:
+        description: 'warning | nat_gateway_id: {{$labels.nat_gateway_id}} packets drop greater than 0, this value is {{ $value | printf "%.2f" }}. | [Duration Time: 3m]'
+        summary: '[RC] {{$labels.job}} nat gateway packets drop '
+      expr: (aws_natgateway_packets_drop_count_sum offset 7m) > 0 
+      for: 3m
+      labels:
+        severity: warning
+        team: ops
+## ALB
+  - name: Infra-ALB
+    rules:
+    - alert: Infra_ALB_Http_5xx_High
+      annotations:
+        description: 'warning | load_balancer: {{$labels.load_balancer}} httpcode 5xx is too high, this value is {{ $value | printf "%.2f" }}. | [Duration Time: 3m]'
+        summary: '[RC] {{$labels.job}} httpcode 5xx is too high '
+      expr: aws_applicationelb_httpcode_elb_5_xx_count_sum offset 7m > 10
+      for: 3m
+      labels:
+        severity: warning
+        team: ops
+## NLB
+  - name: Infra-NLB
+    rules:
+    - alert: Infra_NLB_UnHealthy_High
+      annotations:
+        description: 'warning | load_balancer: {{$labels.load_balancer}} target_group: {{$labels.target_group}} is unhealthy is too high, this value is {{ $value | printf "%.2f" }}. | [Duration Time: 3m]'
+        summary: '[RC] {{$labels.job}} httpcode 5xx is too high '
+      expr: aws_networkelb_un_healthy_host_count_maximum offset 7m  > 0 
+      for: 3m
+      labels:
+        severity: warning
+        team: ops
+#nginx
+## ingess-nginx
+  - name: Infra-Ingress-nginx-dev
+    rules:
+    # These are just examples rules, please adapt them to your needs
+    - alert: Infra-NGINXConfigFailed
+      expr: count(nginx_ingress_controller_config_last_reload_successful == 0) > 0
+      for: 1s
+      labels:
+        severity: critical
+        team: ops
+      annotations:
+        description: bad ingress config - nginx config test failed
+        summary: uninstall the latest ingress changes to allow config reloads to resume
+    # By default a fake self-signed certificate is generated as default and
+    # it is fine if it expires. If `--default-ssl-certificate` flag is used
+    # and a valid certificate passed please do not filter for `host` label!
+    # (i.e. delete `{host!="_"}` so also the default SSL certificate is
+    # checked for expiration)
+    - alert: Infra-NGINXCertificateExpiry
+      expr: (avg(nginx_ingress_controller_ssl_expire_time_seconds{host!="_"}) by (host) - time()) < 604800
+      for: 1s
+      labels:
+        severity: critical
+        team: ops
+      annotations:
+        description: ssl certificate(s) will expire in less then a week
+        summary: renew expiring certificates to avoid downtime
+    - alert: Infra-NGINXTooMany500s
+      #expr: 100 * ( sum( nginx_ingress_controller_requests{status=~"5.+"} ) / sum(nginx_ingress_controller_requests) ) > 5
+      expr: 100 * (sum (irate(nginx_ingress_controller_requests{status=~"5.+"}[1m]) )/ sum(irate(nginx_ingress_controller_requests[1m])))  >5 
+      for: 2m
+      labels:
+        severity: warning
+        team: ops
+      annotations:
+        description: Too many 5XXs
+        summary: More than 5% of all requests returned 5XX, this requires your attention
+    - alert: Infra-NGINXTooMany400s
+      #expr: 100 * ( sum( nginx_ingress_controller_requests{status=~"4.+"} ) / sum(nginx_ingress_controller_requests) ) > 5
+      expr: 100 * (sum (irate(nginx_ingress_controller_requests{status=~"4.+"}[1m]) )/ sum(irate(nginx_ingress_controller_requests[1m])))  >5 
+      for: 2m
+      labels:
+        severity: warning
+        team: ops
+      annotations:
+        description: Too many 4XXs
+        summary: More than 5% of all requests returned 4XX, this requires your attention
+
+
+#Infra Middleware Log: Kafka ES(Opensearch)
+  - name: Infra-Log-Kafka
+    rules:
+    - alert: Infra_Log_Kafka_Lag_Behind
+      annotations:
+        summary: 'warning | Consumergroup: {{ $labels.consumergroup }} topic: {{ $labels.topic }}  lag  {{ $value | printf "%.2f" }} > 6000000. | [Duration Time: 5m]'
+        description: '[Infra] Log Kafka lag behind'
+      expr: sum(kafka_consumergroup_lag{app="kafka-exporter-log"}) by (consumergroup, topic, instance) > 6000000
+      #expr: sum(kafka_consumergroup_lag{app="kafka-exporter-log"}) by (consumergroup, topic, instance) == 0 
+      #for: 5m
+      labels:
+        severity: warning
+        team: ops
+    - alert: Infra_Log_ES_cluster_status_red Critical
+      annotations:
+        description: '{{ $labels.severity }} | ES: {{ $labels.client_id }}:{{ $labels.domain_name }} cluster status is red | [Duration Time: 1m]'
+        summary: '[Infra] {{ $labels.domain_name }} Opensrearch Cluster Down'
+      expr: max by(client_id,domain_name)(aws_es_cluster_status_red_maximum) == 1
+      for: 3m
+      labels:
+        severity: waring
+        team: ops
+        on_call: ops
+
+
+#Infra Middleware DB rds redis mongodb postgresql
+##rds
+  - name: Infra-RDS
+    rules:
+    - alert: Infra_RDS_CPUUtilization_High Critical
+      annotations:
+        description: '{{ $labels.severity }} | RDS: {{ $labels.aws_region }} / {{ $labels.dbidentifier }} CPU usage > 85%,
+          this value is {{ $value | printf "%.3f" }}%. | [Duration Time: 3m]'
+        summary: '[Infra] {{ $labels.dbidentifier }} RDS  CPU usage is too high'
+      expr: max by(aws_account_id,aws_region,dbidentifier)(rds_cpu_usage_percent_average) > 85
+      for: 3m
+      labels:
+        dbtype: db-rds
+        severity: critical
+        team: ops
+        on_call: ops
+    - alert: Infra_RDS_CPUUtilization_High
+      annotations:
+        description: 'warning | RDS: {{ $labels.aws_region }} / {{ $labels.dbidentifier }} CPU usage > 80%,
+          this value is {{ $value | printf "%.3f" }}%. | [Duration Time: 3m]'
+        summary: '[Infra] {{ $labels.dbidentifier }} RDS  CPU usage is too high'
+      expr: sum by(aws_account_id,aws_region,dbidentifier)(rds_cpu_usage_percent_average) > 80
+      for: 3m
+      labels:
+        dbtype: db-rds
+        severity: warning
+        team: ops
+    - alert: Infra_RDS_IOPS_usage_High
+      annotations:
+        description: 'warning | RDS: {{ $labels.aws_region }} / {{ $labels.dbidentifier }} IOPS usage > 80%,
+          this value is {{ $value | printf "%.0f" }}%. | [Duration Time: 3m]'
+        summary: '[Infra] {{ $labels.dbidentifier }} RDS  IOPS usage is too high'
+      expr: |
+        max by (aws_account_id, aws_region, dbidentifier) (
+          (rds_read_iops_average + rds_read_iops_average) * 100 / rds_max_disk_iops_average
+        ) > 80
+      for: 3m
+      labels:
+        dbtype: db-rds
+        severity: warning
+        team: ops
+    - alert: Infra_RDS_disk_storage_usage_High
+      annotations:
+        description: 'warning | RDS: {{ $labels.aws_region }} / {{ $labels.dbidentifier }} disk storage usage > 90%,
+          this value is {{ $value | printf "%.3f" }}%. | [Duration Time: 3m]'
+        summary: '[Infra] {{ $labels.dbidentifier }} RDS  disk storage usage is too high'
+      expr: |-
+        100 - max by (aws_account_id, aws_region, dbidentifier) (
+          rds_free_storage_bytes * 100 / rds_allocated_storage_bytes
+        ) > 90
+      for: 3m
+      labels:
+        dbtype: db-rds
+        severity: warning
+        team: ops
+    - alert: Infra_RDS_ExporterDown
+      annotations:
+        description: 'critical | {{ $labels.instance }} exporter is down | [Duration Time: 5m]'
+        runbook_url: https://qonto.github.io/database-monitoring-framework/0.2.0/runbooks/rds/RDSExporterDown
+        summary: '[Infra] Exporter is down'     
+      expr: |
+        up{} * on (instance) rds_exporter_build_info{} < 1
+      for: 5m
+      labels:
+        dbtype: db-rds
+        severity: critical
+        team: ops
+        on_call: ops
+    - alert: Infra_RDS_ReplicationLag"
+      annotations:
+        description: 'warning | {{ $labels.dbidentifier }} has {{ $value | humanizeDuration }} lag > 60 | [Duration Time: 3m]'
+        runbook_url: https://qonto.github.io/database-monitoring-framework/0.2.0/runbooks/rds/RDSReplicationLag
+        summary: '[Infra] {{ $labels.dbidentifier }} has high replication lag'   
+      expr: |
+        max by (aws_account_id, aws_region, dbidentifier) (rds_replica_lag_seconds{}) > 60
+      for: 5m
+      labels:
+        dbtype: db-rds
+        severity: warning
+        team: ops
+#rds无:连接数 代理cpu 实例异常
+##redis
+  - name: Infra-Redis
+    rules:
+    - alert: Infra_Redis_IsMaster_Failed
+      annotations:
+        description: "warning | {{ $labels.exported_job }}:{{$labels.cache_cluster_id}}  Redis failed over. | [Duration Time: 1m]"
+        summary: '[Infra] {{$labels.cache_cluster_id}} is not primary'
+      expr: aws_elasticache_is_master_average{cache_cluster_id=~"redis-test-2-001|RCprod-cluster01-002"} offset 7m !=1
+      for: 1m
+      labels:
+        dbtype: db-redis
+        severity: warning
+        team: ops
+    - alert: Infra_Redis_EngineCPUUtilization
+      annotations:
+        description: 'warning | {{$labels.cache_cluster_id}}  Redis cpu usage is {{ $value | printf "%.2f" }}% > 50% | [Duration Time: 3m]'
+        summary: '[Infra] Redis_EngineCPUUtilization is too high'
+      expr: aws_elasticache_engine_cpuutilization_average{cache_cluster_id=~"redis-test-2.*|RC-api.*"} offset 7m > 50
+      for: 3m
+      labels:
+        dbtype: db-redis
+        severity: warning
+        team: ops
+    - alert: Infra_Redis_DatabaseMemoryUsagePercentage
+      annotations:
+        description: 'warning | {{$labels.cache_cluster_id}}  Redis memory usage is {{ $value | printf "%.2f" }}% > 50% | [Duration Time: 3m]'
+        summary: "[Infra] {{$labels.cache_cluster_id}}  Redis memory usage is too high"
+      expr: aws_elasticache_database_memory_usage_percentage_average{cache_cluster_id=~"redis-test-2.*|RC-api.*"} offset 7m > 80
+      for: 3m
+      labels:
+        dbtype: db-redis
+        severity: warning
+        team: ops
+    - alert: Infra_Redis_MemoryFragmentationRatio
+      annotations:
+        summary: "{{$labels.cache_cluster_id}}  Redis memory fragmentation ratio is high"
+        description: '{{ $value | printf "%.2f" }}'
+      expr: aws_elasticache_memory_fragmentation_ratio_average{cache_cluster_id=~"redis-test-2.*|RC-api.*"}  offset 7m > 6
+      for: 1m
+      labels:
+        dbtype: db-redis
+        severity: page
+##mongodb
+  - name: Infra-MongoDB
+    rules:
+    - alert: Infra_MongoDB_CPUUtilization
+      annotations:
+        description: 'warning | MongoDB {{$labels.dbinstance_identifier}} cpu usage is {{ $value | printf "%.2f" }}% > 80% | [Duration Time: 3m]'
+        summary: '[Infra] Redis_EngineCPUUtilization is too high'
+      expr: aws_elasticache_engine_cpuutilization_average{dbinstance_identifier=~"docdb-2024-05-14-08-57-04|RC-api.*"} offset 7m > 80
+      for: 3m
+      labels:
+        dbtype: db-mongodb
+        severity: warning
+        team: ops
+
+#Kubernets Pod Storage
+  - name: Infra-Kubernetes-Pod
+    rules:
+    - alert: Infra_Pod_Restarted
+      annotations:
+        summary: "[Infra] Pod  restarted"
+        description: "warning | {{ $labels.pod }}  has been restarted  {{ $value }} times | [Duration Time: 30min]."
+      expr: changes(kube_pod_container_status_restarts_total{namespace=~".*",container!="filebeat-sidecar"}[30m]) >0
+      for: 1m
+      labels:
+        severity: warning
+        team: ops
+  - name: Infra-Kubernetes-Node
+    rules:
+    - alert: PersistentVolume_FillingUp
+      annotations:
+        summary: '[Infra] PersistentVolume is filling up'
+        description: 'warning | Based on recent sampling, the PersistentVolume claimed by {{ $labels.persistentvolumeclaim
+          }} in Namespace {{ $labels.namespace }} is expected to fill up within four days.
+          Currently {{ $value | humanizePercentage }} is used [Duration Time: 1h].'
+      expr: |
+        sum by (persistentvolumeclaim, instance, namespace, )((
+          kubelet_volume_stats_used_bytes{ job="kubelet", namespace=~".*"}
+            / 
+          kubelet_volume_stats_capacity_bytes{ job="kubelet", namespace=~".*"}
+        ) > 0.85
+        and
+        kubelet_volume_stats_used_bytes{ job="kubelet", namespace=~".*"} > 0 
+        and
+        predict_linear(kubelet_volume_stats_available_bytes{ job="kubelet", namespace=~".*"}[6h], 4 * 24 * 3600) < 0)
+      for: 1h
+      labels:
+        severity: warning
+
+
+#EC2: EKS and NotInEKS
+  - name: Infra-Node
+    rules:
+    - alert: Infra_Node_CPU_Usage_High
+      annotations:
+        summary: '[Infra] EC2 CPU usage is too high'
+        description: 'waring | {{ $labels.business }} {{ $labels.instance }} CPU usage is {{ $value | printf "%.2f" }}% >80% | [Duration Time: 5m]'
+      expr: 100 - avg by (instance,business) (irate(node_cpu_seconds_total{mode="idle", job="node-exporter"}[5m]))*100 > 80
+      for: 5m
+      labels:
+        severity: warning
+    - alert: Infra_Node_Exporter_Down
+      annotations:
+        summary: '[Infra] {{ $labels.business }} {{ $labels.instance }} exporter is down'
+        description: "warning | {{ $labels.instance }} exporter is down. | [Duration Time: 1m]"
+      expr: up{job="node-exporter"} == 0
+      for: 1m
+      labels:
+        severity: warning
+    - alert: Infra_Node_Memory_Usage_High
+      annotations:
+        summary: "[Infra] {{ $labels.business }} {{ $labels.instance }}  free memory low"
+        description: 'warning | {{ $labels.instance }}  memory usage is {{ $value | printf "%.2f" }}% > 85%. | [Duration Time: 5m]'
+      expr: 100 - (node_memory_MemAvailable_bytes{job="node-exporter"}/node_memory_MemTotal_bytes{job="node-exporter"} * 100) > 85
+      for: 5m
+      labels:
+        severity: warning
+    - alert: Infra_Node_disk_usage
+      annotations:
+        summary: "[Infra] {{ $labels.business }} {{ $labels.instance }} disk free low"
+        description: 'warning | {{ $labels.instance }}  disk usage is {{ $value | printf "%.2f" }}% > 85%. | [Duration Time: 3m]'
+      expr: ((node_filesystem_size_bytes{mountpoint!~"(/run.*|/var.*|/snap.*)"} - node_filesystem_free_bytes{mountpoint!~"(/run.*|/var.*|/snap.*)"}) * 100 / node_filesystem_size_bytes{mountpoint!~"(/run.*|/var.*|/snap.*)"}) > 85
+      for: 3m
+      labels:
+        severity: warning
+    - alert: Infra_Node_disk_fill_rate_6h
+      annotations:
+        summary: "[Infra] Disk fill alert for Swarm node {{ $labels.instance }}"
+        description: 'warning | {{ $labels.business }} {{ $labels.instance }}  disk usage is {{ $value | printf "%.2f" }}% > 85%. | [Duration Time: 1h]'
+      expr: predict_linear(node_filesystem_free_bytes{mountpoint="/rootfs"}[1h], 6 * 3600) * ON(instance) GROUP_LEFT(node_name) node_meta < 0
+      for: 1h
+      labels:
+        severity: critical
+    - alert: Infra_NodeDiskIOSaturation
+      annotations:
+        description: Disk IO queue (aqu-sq) is high on {{ $labels.device }} at {{ $labels.instance }}, 
+          has been above 10 for the last 30 minutes, is currently at {{ printf "%.2f" $value }}.
+          This symptom might indicate disk saturation.
+        runbook_url: https://runbooks.prometheus-operator.dev/runbooks/node/nodediskiosaturation
+        summary: Disk IO queue is high.
+      expr: rate(node_disk_io_time_weighted_seconds_total{device=~"(/dev/)?(mmcblk.p.+|nvme.+|rbd.+|sd.+|vd.+|xvd.+|dm-.+|md.+|dasd.+)",job="node-exporter"}[5m]) > 10
+      for: 30m
+      labels:
+        severity: warning
+    - alert: Infra_Node_Network_Received_High
+      annotations:
+        summary: "[Infra] {{ $labels.business }} {{ $labels.instance }} Network_Received_High"
+        description: 'warning | {{ $labels.instance }} Network Received is {{ $value | printf "%.2f" }}Mibit/s > 1600Mibit/s. | [Duration Time: 3m]'
+      expr: sum by(instance,business,dbtype)( rate(node_network_receive_bytes_total{job="node-exporter", device!="lo"}[5m]) * 8/1024/1024) > 1600
+      for: 3m
+      labels:
+        severity: warning
+    - alert: Infra_Node_Network_Transmitted_High
+      annotations:
+        summary: "[Infra] {{ $labels.business }} {{ $labels.instance }} Network_Transmitted_High"
+        description: 'warning | {{ $labels.instance }} Network Transmitted is {{ $value | printf "%.2f" }}Mibit/s > 1600Mibit/s. | [Duration Time: 3m]'
+      expr: sum by(instance,business,dbtype)( rate(node_network_transmit_bytes_total{job="node-exporter", device!="lo"}[5m]) * 8/1024/1024) > 1600
+      for: 3m
+      labels:
+        severity: warning
+    - alert: Infra_Node_Load5_High
+      annotations:
+        summary: "[Infra] {{ $labels.business }} {{ $labels.instance }} Load5_High"
+        description: 'warning | {{ $labels.instance }} Load5 {{ $value | printf "%.2f" }} > 2 times the number of CPU cores | [Duration Time: 3m]'
+      expr: avg by(instance) (irate(node_load5[5m])) > count by(instance) (node_cpu_seconds_total{mode="idle"}) * 2
+      for: 3m
+      labels:
+        severity: warning
+    - alert: Infra_Node_Load5_High
+      annotations:
+        summary: "[Infra] {{ $labels.business }} {{ $labels.instance }} Load5_High"
+        description: 'warning | {{ $labels.instance }} Load5 {{ $value | printf "%.2f" }} > 1.5 times the number of CPU cores and iowait > 20% | [Duration Time: 3m]'
+      expr: (avg by(instance) (irate(node_load5[5m])) > count by(instance) (node_cpu_seconds_total{mode="idle"}) * 2) AND (avg by(instance) (irate(node_cpu_seconds_total{mode="iowait"}[5m])) / sum by(instance) (irate(node_cpu_seconds_total[5m])) > 0.2)
+      for: 3m
+      labels:
+        severity: critical
+        team: ops
+        on_call: ops
+    - alert: Infra_Node_OOMKILL
+      annotations:
+        summary: "[Infra] {{ $labels.business }} {{ $labels.instance }} OOMKILL"
+        description: 'warning | {{ $labels.instance }} OOMKILL | [Duration Time: 3m]'
+      expr: increase(node_vmstat_oom_kill[5m]) > 0
+      for: 3m
+      labels:
+        severity: warning

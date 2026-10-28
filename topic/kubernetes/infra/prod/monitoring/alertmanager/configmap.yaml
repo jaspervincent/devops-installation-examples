@@ -1,0 +1,100 @@
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+data:
+  config.yml: |-
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 20m
+      receiver: 'default-receiver'
+
+      routes:
+      - receiver: 'db-webhook-p1'
+        group_wait: 10s
+        group_interval: 30s
+        repeat_interval: 30m
+        match_re:
+          severity: critical
+          dbtype: "db.*"
+      - receiver: 'db-webhook-p2'
+        group_wait: 10s
+        group_interval: 30s
+        repeat_interval: 30m
+        match_re:
+          severity: warning
+          dbtype: "db.*"
+      - receiver: 'webhook-critical'
+        group_wait: 10s
+        group_interval: 30s
+        repeat_interval: 30m
+        match_re:
+          team: "rc.*"
+          severity: critical
+      - receiver: 'webhook-warning'
+        group_wait: 10s
+        group_interval: 30s
+        repeat_interval: 30m
+        match_re:
+          team: "rc.*"
+          severity: warning
+      - receiver: 'domain-webhook-warning'
+        group_wait: 10s
+        group_interval: 30s
+        repeat_interval: 24h
+        match:
+          team: domain-alert
+          severity: warning
+      - receiver: 'default-receiver'
+        group_by: ['alertname']
+        match_re:
+          alertname: ".*"
+          #severity: "(?!info).*"
+
+    receivers:
+    - name: "db-webhook-p1"
+      webhook_configs:
+      #- url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/db-webhook-p1/send'
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
+        send_resolved: true
+    - name: "db-webhook-p2"
+      webhook_configs:
+      #- url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/db-webhook-p2/send'
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
+        send_resolved: true
+    - name: "webhook-warning"
+      webhook_configs:
+      #- url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/business-webhook-warning/send'
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
+        send_resolved: true
+    - name: "webhook-critical"
+      webhook_configs:
+      #- url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/business-webhook-critical/send'
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
+        send_resolved: true
+    - name: "domain-webhook-warning"
+      webhook_configs:
+      #- url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/domain-webhook-warning/send'
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
+        send_resolved: true
+    - name: "default-receiver"
+      webhook_configs:
+      - url: 'http://prometheus-webhook-dingtalk:8060/dingtalk/default-webhook-warning/send'
+        send_resolved: false
+
+    inhibit_rules:
+      - source_match:
+          severity: 'critical'
+        target_match:
+          severity: 'warning'
+        equal: ['alertname', 'instance']
+
+    #templates:
+    #- /etc/alertmanager/config/*.tmpl
+

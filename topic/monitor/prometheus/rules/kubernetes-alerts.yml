@@ -1,0 +1,895 @@
+# Kubernetes Prometheus alerting rules
+#
+# Assumptions:
+# - kube-state-metrics v2.x metrics are available.
+# - kubelet volume metrics are enabled.
+# - kube-apiserver is scraped with job="apiserver".
+# - kube-state-metrics is scraped with job="kube-state-metrics".
+# - kubelet is scraped with job="kubelet".
+#
+# Adjust the three job selectors above if your scrape configuration uses
+# different job labels. Alertmanager should inhibit warning/info alerts for the
+# same object while a critical alert is firing.
+
+groups:
+  - name: Kubernetes监控组件
+    rules:
+      - alert: Kubernetes监控组件KubeStateMetrics不可用
+        expr: up{job="kube-state-metrics"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "kube-state-metrics 不可用"
+          description: "实例 {{ $labels.instance }} 已连续 5 分钟无法被 Prometheus 抓取。依赖 kube-state-metrics 的 Kubernetes 对象告警可能失效。"
+
+      - alert: Kubernetes未发现KubeStateMetrics目标
+        expr: absent(up{job="kube-state-metrics"})
+        for: 10m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Prometheus 未发现 kube-state-metrics"
+          description: "Prometheus 已连续 10 分钟没有发现 job=kube-state-metrics 的任何目标。请检查 ServiceMonitor、服务发现或 job 标签配置。"
+
+      - alert: Kubernetes节点Kubelet不可用
+        expr: up{job="kubelet"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Kubelet 指标抓取失败"
+          description: "Kubelet 实例 {{ $labels.instance }} 已连续 10 分钟无法被 Prometheus 抓取。"
+
+      - alert: KubernetesAPIServer不可用
+        expr: up{job="apiserver"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Kubernetes API Server 不可用"
+          description: "API Server 实例 {{ $labels.instance }} 已连续 5 分钟无法被 Prometheus 抓取。"
+
+      - alert: Kubernetes资源状态同步错误
+        expr: |
+          (
+            sum by (cloud, cluster, business, prometheus, instance, job, resource) (
+              rate(kube_state_metrics_list_total{result="error"}[5m])
+            )
+            /
+            sum by (cloud, cluster, business, prometheus, instance, job, resource) (
+              rate(kube_state_metrics_list_total[5m])
+            )
+          ) > 0.01
+          or
+          (
+            sum by (cloud, cluster, business, prometheus, instance, job, resource) (
+              rate(kube_state_metrics_watch_total{result="error"}[5m])
+            )
+            /
+            sum by (cloud, cluster, business, prometheus, instance, job, resource) (
+              rate(kube_state_metrics_watch_total[5m])
+            )
+          ) > 0.01
+        for: 10m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "kube-state-metrics list/watch 错误率过高"
+          description: "实例 {{ $labels.instance }} 对资源 {{ $labels.resource }} 的 list/watch 错误率已连续 10 分钟超过 1%。其他基于 kube-state-metrics 的告警可能失真。当前比例={{ $value | humanizePercentage }}。"
+
+  - name: KubernetesPod与容器
+    rules:
+      - alert: KubernetesPod容器频繁重启
+        expr: |
+          max by (cloud, cluster, business, prometheus, namespace, pod, container, job) (
+            increase(kube_pod_container_status_restarts_total{container!="filebeat-sidecar"}[6m])
+          ) > 2
+        for: 3m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Pod 容器频繁重启"
+          description: "{{ $labels.namespace }}/{{ $labels.pod }} 中的容器 {{ $labels.container }} 在最近 6 分钟重启超过 2 次，当前={{ $value | printf \"%.0f\" }} 次。"
+
+      - alert: KubernetesPod容器发生OOM
+        expr: |
+          max by (cloud, cluster, business, prometheus, namespace, pod, container, job) (
+            increase(kube_pod_container_status_restarts_total[10m])
+          ) >= 1
+          and on (cloud, cluster, business, prometheus, namespace, pod, container, job)
+          max by (cloud, cluster, business, prometheus, namespace, pod, container, job) (
+            max_over_time(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[10m])
+          ) == 1
+        for: 1m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "容器发生 OOMKilled"
+          description: "{{ $labels.namespace }}/{{ $labels.pod }} 中的容器 {{ $labels.container }} 最近 10 分钟发生 OOMKilled。请检查内存 limit、实际使用量和应用内存增长。"
+
+      - alert: KubernetesPod长时间Pending或Unknown
+        expr: |
+          max by (cloud, cluster, business, prometheus, namespace, pod, job) (
+            kube_pod_status_phase{phase=~"Pending|Unknown"} == 1
+          ) > 0
+        for: 15m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Pod 长时间未进入 Running"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 已连续 15 分钟处于 Pending 或 Unknown 状态。"
+
+      - alert: Kubernetes非Job类型Pod失败
+        expr: |
+          max by (cloud, cluster, business, prometheus, namespace, pod, uid, job) (
+            kube_pod_status_phase{phase="Failed"} == 1
+          )
+          unless on (cloud, cluster, business, prometheus, namespace, pod, uid, job)
+          max by (cloud, cluster, business, prometheus, namespace, pod, uid, job) (
+            kube_pod_owner{owner_kind="Job"} == 1
+          )
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "非 Job Pod 进入 Failed 状态"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 已连续 15 分钟处于 Failed 状态。Job 管理的 Pod 由专用 Job 告警处理。"
+
+      - alert: KubernetesPod发生CrashLoopBackOff
+        expr: |
+          max by (cloud, cluster, business, prometheus, namespace, pod, container, job) (
+            max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}[5m])
+          ) >= 1
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Pod 发生 CrashLoopBackOff"
+          description: "{{ $labels.namespace }}/{{ $labels.pod }} 中的容器 {{ $labels.container }} 已连续出现 CrashLoopBackOff。"
+
+      - alert: KubernetesPod容器长时间等待
+        expr: |
+          max by (cloud, cluster, business, prometheus, namespace, pod, container, reason, job) (
+            kube_pod_container_status_waiting_reason{reason!="CrashLoopBackOff"}
+          ) > 0
+        for: 30m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "容器长时间处于 Waiting"
+          description: "{{ $labels.namespace }}/{{ $labels.pod }} 中的容器 {{ $labels.container }} 已等待超过 30 分钟，原因={{ $labels.reason }}。"
+
+  - name: Kubernetes工作负载
+    rules:
+      - alert: KubernetesStatefulSet无可用副本
+        expr: |
+          (kube_statefulset_replicas > 0)
+          and on (cloud, cluster, business, prometheus, namespace, statefulset, job)
+          (kube_statefulset_status_replicas_ready == 0)
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "StatefulSet 无可用副本"
+          description: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} 已连续 5 分钟没有 Ready 副本。"
+
+      - alert: KubernetesDeployment版本未同步
+        expr: kube_deployment_status_observed_generation != kube_deployment_metadata_generation
+        for: 10m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Deployment generation 不一致"
+          description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} 的控制器已连续 10 分钟未观察到最新配置。"
+
+      - alert: KubernetesStatefulSet版本未同步
+        expr: kube_statefulset_status_observed_generation != kube_statefulset_metadata_generation
+        for: 10m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "StatefulSet generation 不一致"
+          description: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} 的控制器已连续 10 分钟未观察到最新配置。"
+
+      - alert: KubernetesReplicaSet副本数不匹配
+        expr: |
+          (
+            kube_replicaset_spec_replicas != kube_replicaset_status_ready_replicas
+          )
+          unless on (cloud, cluster, business, prometheus, namespace, replicaset, job)
+          kube_replicaset_owner{owner_kind="Deployment"}
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "独立 ReplicaSet 副本不匹配"
+          description: "ReplicaSet {{ $labels.namespace }}/{{ $labels.replicaset }} 的期望副本与 Ready 副本已连续 15 分钟不一致。Deployment 管理的 ReplicaSet 由 Deployment 告警处理。"
+
+      - alert: KubernetesDeployment副本数不匹配
+        expr: kube_deployment_spec_replicas != kube_deployment_status_replicas_available
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Deployment 可用副本不足"
+          description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} 的期望副本与可用副本已连续 10 分钟不一致。"
+
+      - alert: KubernetesDeployment无可用副本
+        expr: |
+          (kube_deployment_spec_replicas > 0)
+          and on (cloud, cluster, business, prometheus, namespace, deployment, job)
+          (kube_deployment_status_replicas_available == 0)
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Deployment 无可用副本"
+          description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} 已连续 5 分钟没有可用副本。"
+
+      - alert: KubernetesStatefulSet副本数不匹配
+        expr: kube_statefulset_replicas != kube_statefulset_status_replicas_ready
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "StatefulSet Ready 副本不足"
+          description: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} 的期望副本与 Ready 副本已连续 10 分钟不一致。"
+
+      - alert: KubernetesStatefulSet更新卡住
+        expr: |
+          (
+            kube_statefulset_replicas != kube_statefulset_status_replicas_updated
+          )
+          and on (cloud, cluster, business, prometheus, namespace, statefulset, job)
+          (
+            changes(kube_statefulset_status_replicas_updated[10m]) == 0
+          )
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "StatefulSet 更新卡住"
+          description: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} 的 updated 副本已连续 10 分钟没有进展。"
+
+      - alert: KubernetesDaemonSet发布卡住
+        expr: |
+          (
+            kube_daemonset_status_number_ready
+              < kube_daemonset_status_desired_number_scheduled
+          )
+          and on (cloud, cluster, business, prometheus, namespace, daemonset, job)
+          (
+            kube_daemonset_status_desired_number_scheduled > 0
+          )
+          and on (cloud, cluster, business, prometheus, namespace, daemonset, job)
+          (
+            changes(kube_daemonset_status_updated_number_scheduled[10m]) == 0
+          )
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "DaemonSet 发布卡住"
+          description: "DaemonSet {{ $labels.namespace }}/{{ $labels.daemonset }} 的 Ready 副本不足，并且 updated 副本已连续 10 分钟没有进展。"
+
+      - alert: KubernetesDaemonSet错误调度
+        expr: kube_daemonset_status_number_misscheduled > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "DaemonSet Pod 被错误调度"
+          description: "DaemonSet {{ $labels.namespace }}/{{ $labels.daemonset }} 有 Pod 运行在不应调度的节点上。数量={{ $value | printf \"%.0f\" }}。"
+
+      - alert: KubernetesDeployment发布卡住
+        expr: kube_deployment_status_condition{condition="Progressing",status="false"} == 1
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Deployment 发布停止推进"
+          description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} 的 Progressing 条件已连续 10 分钟为 false，原因={{ $labels.reason }}。"
+
+  - name: Kubernetes节点
+    rules:
+      - alert: Kubernetes节点内存压力
+        expr: max by (cloud, cluster, business, prometheus, node, job) (kube_node_status_condition{condition="MemoryPressure",status="true"} == 1) > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Node 出现内存压力"
+          description: "节点 {{ $labels.node }} 的 MemoryPressure 已连续 5 分钟为 true。"
+
+      - alert: Kubernetes节点磁盘压力
+        expr: max by (cloud, cluster, business, prometheus, node, job) (kube_node_status_condition{condition="DiskPressure",status="true"} == 1) > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Node 出现磁盘压力"
+          description: "节点 {{ $labels.node }} 的 DiskPressure 已连续 5 分钟为 true。"
+
+      - alert: Kubernetes节点网络不可用
+        expr: max by (cloud, cluster, business, prometheus, node, job) (kube_node_status_condition{condition="NetworkUnavailable",status="true"} == 1) > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Node 网络不可用"
+          description: "节点 {{ $labels.node }} 的 NetworkUnavailable 已连续 5 分钟为 true。"
+
+      - alert: Kubernetes节点长时间未就绪
+        expr: max by (cloud, cluster, business, prometheus, node, job) (kube_node_status_condition{condition="Ready",status=~"false|unknown"} == 1) > 0
+        for: 10m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Node 长时间 NotReady"
+          description: "节点 {{ $labels.node }} 已连续 10 分钟处于 NotReady 或 Unknown 状态。"
+
+      - alert: Kubernetes节点长时间禁止调度
+        expr: max by (cloud, cluster, business, prometheus, node, job) (kube_node_spec_unschedulable == 1) > 0
+        for: 30m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Node 长时间禁止调度"
+          description: "节点 {{ $labels.node }} 已被 cordon 超过 30 分钟。维护节点可通过 Alertmanager silence 或标签路由排除。"
+
+      - alert: Kubernetes节点Pod容量接近上限
+        expr: |
+          100 *
+          count by (cloud, cluster, business, prometheus, node, job) (
+            max by (cloud, cluster, business, prometheus, namespace, pod, uid, job) (
+              kube_pod_status_phase{phase="Running"} == 1
+            )
+            * on (cloud, cluster, business, prometheus, namespace, pod, uid, job) group_left(node)
+            max by (cloud, cluster, business, prometheus, namespace, pod, uid, node, job) (
+              kube_pod_info
+            )
+          )
+          /
+          max by (cloud, cluster, business, prometheus, node, job) (
+            kube_node_status_allocatable{resource="pods"}
+          ) > 90
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Node Pod 容量接近上限"
+          description: "节点 {{ $labels.node }} 的 Running Pod 数量已连续 10 分钟超过可分配 Pod 容量的 90%，当前={{ $value | printf \"%.1f\" }}%。"
+
+  - name: Kubernetes存储
+    rules:
+      - alert: KubernetesPVC可用空间不足
+        expr: |
+          (
+            kubelet_volume_stats_available_bytes
+            / kubelet_volume_stats_capacity_bytes
+          ) < 0.10
+          and kubelet_volume_stats_capacity_bytes > 0
+        for: 10m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "PVC 可用空间不足 10%"
+          description: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} 的可用空间已连续 10 分钟低于 10%，当前={{ $value | humanizePercentage }}。"
+
+      - alert: KubernetesPVC预计四天内写满
+        expr: |
+          predict_linear(
+            kubelet_volume_stats_available_bytes[6h],
+            4 * 24 * 3600
+          ) < 0
+          and deriv(kubelet_volume_stats_available_bytes[6h]) < 0
+          and
+          (
+            kubelet_volume_stats_available_bytes
+            / kubelet_volume_stats_capacity_bytes
+          ) < 0.40
+        for: 30m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "PVC 预计四天内写满"
+          description: "按照最近 6 小时的下降趋势，PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} 预计在四天内耗尽空间。预测剩余字节={{ $value | humanize1024 }}。"
+
+      - alert: KubernetesPVC可用Inode不足
+        expr: |
+          (
+            kubelet_volume_stats_inodes_free
+            / kubelet_volume_stats_inodes
+          ) < 0.03
+          and kubelet_volume_stats_inodes > 0
+        for: 10m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "PVC inode 剩余不足 3%"
+          description: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} 的 inode 剩余比例已连续 10 分钟低于 3%，当前={{ $value | humanizePercentage }}。"
+
+      - alert: KubernetesPVC的Inode预计四天内耗尽
+        expr: |
+          predict_linear(
+            kubelet_volume_stats_inodes_free[6h],
+            4 * 24 * 3600
+          ) < 0
+          and deriv(kubelet_volume_stats_inodes_free[6h]) < 0
+          and
+          (
+            kubelet_volume_stats_inodes_free
+            / kubelet_volume_stats_inodes
+          ) < 0.40
+        for: 30m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "PVC inode 预计四天内耗尽"
+          description: "按照最近 6 小时的下降趋势，PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} 的 inode 预计在四天内耗尽。"
+
+      - alert: Kubernetes持久卷进入失败状态
+        expr: kube_persistentvolume_status_phase{phase="Failed"} == 1
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "PersistentVolume 进入 Failed 状态"
+          description: "PersistentVolume {{ $labels.persistentvolume }} 已连续 5 分钟处于 Failed 状态。"
+
+      - alert: Kubernetes持久卷长时间等待
+        expr: kube_persistentvolume_status_phase{phase="Pending"} == 1
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "PersistentVolume 长时间 Pending"
+          description: "PersistentVolume {{ $labels.persistentvolume }} 已连续 15 分钟处于 Pending 状态。"
+
+      - alert: Kubernetes持久卷声明长时间等待
+        expr: kube_persistentvolumeclaim_status_phase{phase="Pending"} == 1
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "PVC 长时间 Pending"
+          description: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} 已连续 15 分钟处于 Pending 状态。"
+
+      - alert: Kubernetes持久卷声明丢失
+        expr: kube_persistentvolumeclaim_status_phase{phase="Lost"} == 1
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "PVC 进入 Lost 状态"
+          description: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} 已连续 5 分钟处于 Lost 状态。"
+
+  - name: Kubernetes任务与定时任务
+    rules:
+      - alert: Kubernetes定时任务执行时间过长
+        expr: |
+          (
+            (time() - kube_job_status_start_time > 3600)
+            and on (cloud, cluster, business, prometheus, namespace, job_name, job)
+            (kube_job_status_active > 0)
+          )
+          * on (cloud, cluster, business, prometheus, namespace, job_name, job) group_left(owner_name)
+          (
+            kube_job_owner{owner_kind="CronJob",owner_is_controller="true"} == 1
+          )
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "CronJob 执行时间超过一小时"
+          description: "CronJob {{ $labels.namespace }}/{{ $labels.owner_name }} 创建的 Job {{ $labels.job_name }} 已运行超过一小时。请根据不同 CronJob 的正常执行时间调整阈值。"
+
+      - alert: Kubernetes定时任务执行失败
+        expr: |
+          (
+            (
+              kube_cronjob_status_last_schedule_time
+                > kube_cronjob_status_last_successful_time
+            )
+            or
+            (
+              (kube_cronjob_status_last_schedule_time > 0)
+              unless on (cloud, cluster, business, prometheus, namespace, cronjob, job)
+              kube_cronjob_status_last_successful_time
+            )
+          )
+          and on (cloud, cluster, business, prometheus, namespace, cronjob, job)
+          (kube_cronjob_status_active == 0)
+          and on (cloud, cluster, business, prometheus, namespace, cronjob, job)
+          (kube_cronjob_spec_suspend == 0)
+        for: 15m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "CronJob 最近一次调度未成功"
+          description: "CronJob {{ $labels.namespace }}/{{ $labels.cronjob }} 最近一次调度后没有成功完成的 Job，并且当前没有活动 Job。"
+
+      - alert: Kubernetes任务执行时间过长
+        expr: |
+          (time() - kube_job_status_start_time > 12 * 3600)
+          and on (cloud, cluster, business, prometheus, namespace, job_name, job)
+          (kube_job_status_active > 0)
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Job 执行超过 12 小时"
+          description: "Job {{ $labels.namespace }}/{{ $labels.job_name }} 已执行超过 12 小时。请按不同 Job 的预期运行时间调整阈值。"
+
+      - alert: Kubernetes任务执行失败
+        expr: |
+          (kube_job_status_failed > 0)
+          and on (cloud, cluster, business, prometheus, namespace, job_name, job)
+          (kube_job_status_active == 0)
+          and on (cloud, cluster, business, prometheus, namespace, job_name, job)
+          (kube_job_status_succeeded == 0)
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Job 执行失败"
+          description: "Job {{ $labels.namespace }}/{{ $labels.job_name }} 已失败且当前不再运行。失败 Pod 数={{ $value | printf \"%.0f\" }}。"
+
+      - alert: Kubernetes任务创建后未启动
+        expr: |
+          (time() - kube_job_created > 600)
+          and on (cloud, cluster, business, prometheus, namespace, job_name, job)
+          (kube_job_status_active == 0)
+          and on (cloud, cluster, business, prometheus, namespace, job_name, job)
+          (kube_job_status_failed == 0)
+          and on (cloud, cluster, business, prometheus, namespace, job_name, job)
+          (kube_job_status_succeeded == 0)
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Job 创建后未启动"
+          description: "Job {{ $labels.namespace }}/{{ $labels.job_name }} 创建超过 10 分钟后仍未启动。"
+
+      - alert: Kubernetes定时任务已暂停
+        expr: kube_cronjob_spec_suspend != 0
+        for: 30m
+        labels:
+          severity: info
+          team: ops
+        annotations:
+          summary: "CronJob 处于暂停状态"
+          description: "CronJob {{ $labels.namespace }}/{{ $labels.cronjob }} 已暂停超过 30 分钟。若为计划内暂停，可通过 Alertmanager 静默或删除此 info 规则。"
+
+  - name: Kubernetes控制平面
+    rules:
+      - alert: KubernetesAPIServer错误率过高
+        expr: |
+          (
+            sum by (cloud, cluster, business, prometheus, instance, job) (
+              rate(apiserver_request_total{job="apiserver",code=~"5.."}[5m])
+            )
+            /
+            sum by (cloud, cluster, business, prometheus, instance, job) (
+              rate(apiserver_request_total{job="apiserver"}[5m])
+            )
+          ) > 0.03
+          and
+          sum by (cloud, cluster, business, prometheus, instance, job) (
+            rate(apiserver_request_total{job="apiserver"}[5m])
+          ) > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "API Server 5xx 错误率过高"
+          description: "API Server {{ $labels.instance }} 的 5xx 错误率已连续 5 分钟超过 3%，当前={{ $value | humanizePercentage }}。"
+
+      - alert: KubernetesAPI客户端错误率过高
+        expr: |
+          (
+            sum by (cloud, cluster, business, prometheus, instance, job) (
+              rate(rest_client_requests_total{code=~"5.."}[5m])
+            )
+            /
+            sum by (cloud, cluster, business, prometheus, instance, job) (
+              rate(rest_client_requests_total[5m])
+            )
+          ) > 0.01
+          and
+          sum by (cloud, cluster, business, prometheus, instance, job) (
+            rate(rest_client_requests_total[5m])
+          ) > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Kubernetes API 客户端 5xx 错误率过高"
+          description: "客户端 {{ $labels.job }}/{{ $labels.instance }} 的 API 5xx 错误率已连续 5 分钟超过 1%，当前={{ $value | humanizePercentage }}。"
+
+      - alert: KubernetesAPI客户端被限流
+        expr: |
+          (
+            sum by (cloud, cluster, business, prometheus, instance, job) (
+              rate(rest_client_requests_total{code="429"}[5m])
+            )
+            /
+            sum by (cloud, cluster, business, prometheus, instance, job) (
+              rate(rest_client_requests_total[5m])
+            )
+          ) > 0.05
+          and
+          sum by (cloud, cluster, business, prometheus, instance, job) (
+            rate(rest_client_requests_total[5m])
+          ) > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Kubernetes API 客户端被限流"
+          description: "客户端 {{ $labels.job }}/{{ $labels.instance }} 的 429 比例已连续 10 分钟超过 5%，当前={{ $value | humanizePercentage }}。"
+
+      - alert: KubernetesAPIServer主动终止大量请求
+        expr: |
+          sum by (cloud, cluster, business, prometheus, instance, job) (
+            rate(apiserver_request_terminations_total{job="apiserver"}[10m])
+          )
+          /
+          sum by (cloud, cluster, business, prometheus, instance, job) (
+            rate(apiserver_request_total{job="apiserver"}[10m])
+          ) > 0.20
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "API Server 主动终止大量请求"
+          description: "API Server {{ $labels.instance }} 主动终止的请求比例已连续 5 分钟超过 20%，当前={{ $value | humanizePercentage }}。该指标为 ALPHA，请确认当前 Kubernetes 版本提供此指标。"
+
+      - alert: KubernetesAPIServer响应延迟过高
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (cloud, cluster, business, prometheus, instance, job, verb, resource, le) (
+              rate(apiserver_request_duration_seconds_bucket{
+                job="apiserver",
+                verb!~"CONNECT|WATCHLIST|WATCH|PROXY"
+              }[10m])
+            )
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "API Server P99 延迟过高"
+          description: "API Server {{ $labels.instance }} 对 {{ $labels.verb }} {{ $labels.resource }} 的 P99 延迟已连续 5 分钟超过 1 秒，当前={{ $value | printf \"%.3f\" }} 秒。"
+
+      #- alert: Kubernetes组件版本不一致
+      #  expr: |
+      #    count by (cloud, cluster, business, prometheus, job) (
+      #      count by (cloud, cluster, business, prometheus, git_version, job) (
+      #        label_replace(
+      #          kubernetes_build_info,
+      #          "git_version",
+      #          "$1",
+      #          "git_version",
+      #          "(v[0-9]+\\.[0-9]+\\.[0-9]+).*"
+      #        )
+      #      )
+      #    ) > 1
+      #  for: 30m
+      #  labels:
+      #    severity: warning
+      #    team: ops
+      #  annotations:
+      #    summary: "Kubernetes 组件版本不一致"
+      #    description: "集群内同时运行 {{ $value | printf \"%.0f\" }} 个不同的 Kubernetes 语义版本。升级窗口内可静默，非升级期间请检查是否存在未完成升级。"
+
+      - alert: Kubernetes客户端证书将在一天内过期
+        expr: |
+          histogram_quantile(
+            0.01,
+            sum by (cloud, cluster, business, prometheus, job, instance, le) (
+              rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m])
+            )
+          ) < 24 * 60 * 60
+        for: 10m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "API Server 客户端证书将在 24 小时内过期"
+          description: "API Server {{ $labels.instance }} 最近观察到的客户端证书中，至少有证书将在 24 小时内过期。估算剩余={{ $value | humanizeDuration }}。"
+
+      - alert: Kubernetes客户端证书将在七天内过期
+        expr: |
+          (
+            histogram_quantile(
+              0.01,
+              sum by (cloud, cluster, business, prometheus, job, instance, le) (
+                rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m])
+              )
+            ) < 7 * 24 * 60 * 60
+          )
+          and
+          (
+            histogram_quantile(
+              0.01,
+              sum by (cloud, cluster, business, prometheus, job, instance, le) (
+                rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m])
+              )
+            ) >= 24 * 60 * 60
+          )
+        for: 30m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "API Server 客户端证书将在 7 天内过期"
+          description: "API Server {{ $labels.instance }} 最近观察到的客户端证书中，至少有证书将在 1 至 7 天内过期。估算剩余={{ $value | humanizeDuration }}。"
+
+  - name: Kubernetes策略与自动扩缩容
+    rules:
+      - alert: KubernetesHPA达到上限且扩容受限
+        expr: |
+          (
+            kube_horizontalpodautoscaler_status_condition{
+              condition="ScalingLimited",
+              status="true"
+            } == 1
+          )
+          and on (cloud, cluster, business, prometheus, namespace, horizontalpodautoscaler, job)
+          (
+            kube_horizontalpodautoscaler_status_desired_replicas
+              >= kube_horizontalpodautoscaler_spec_max_replicas
+          )
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "HPA 达到上限且扩容受限"
+          description: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} 已连续 10 分钟达到最大副本数且 ScalingLimited=true。"
+
+      - alert: KubernetesHPA无法获取扩缩容指标
+        expr: kube_horizontalpodautoscaler_status_condition{condition="ScalingActive",status="false"} == 1
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "HPA 无法获取扩缩容指标"
+          description: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} 已连续 10 分钟无法计算所需指标，原因={{ $labels.reason }}。"
+
+      - alert: KubernetesHPA长时间达到最大副本数
+        expr: |
+          (
+            kube_horizontalpodautoscaler_status_desired_replicas
+              >= kube_horizontalpodautoscaler_spec_max_replicas
+          )
+          and on (cloud, cluster, business, prometheus, namespace, horizontalpodautoscaler, job)
+          (kube_horizontalpodautoscaler_spec_max_replicas > 1)
+          and on (cloud, cluster, business, prometheus, namespace, horizontalpodautoscaler, job)
+          (
+            kube_horizontalpodautoscaler_spec_min_replicas
+              != kube_horizontalpodautoscaler_spec_max_replicas
+          )
+        for: 15m
+        labels:
+          severity: info
+          team: ops
+        annotations:
+          summary: "HPA 长时间达到最大副本数"
+          description: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} 已连续 15 分钟达到最大副本数。"
+
+      - alert: KubernetesHPA可能长期低利用率
+        expr: |
+          (
+            quantile_over_time(
+              0.5,
+              kube_horizontalpodautoscaler_status_desired_replicas[1d]
+            )
+            == on (cloud, cluster, business, prometheus, namespace, horizontalpodautoscaler, job)
+            kube_horizontalpodautoscaler_spec_min_replicas
+          )
+          and on (cloud, cluster, business, prometheus, namespace, horizontalpodautoscaler, job)
+          (kube_horizontalpodautoscaler_spec_min_replicas > 3)
+        for: 1h
+        labels:
+          severity: info
+          team: ops
+        annotations:
+          summary: "HPA 可能长期低利用率"
+          description: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} 最近一天至少一半时间处于最小副本数，且最小副本数大于 3，可评估是否降低基线容量。"
+
+      - alert: KubernetesPod中断预算健康副本不足
+        expr: |
+          kube_poddisruptionbudget_status_desired_healthy
+            > kube_poddisruptionbudget_status_current_healthy
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "PDB 健康 Pod 数不足"
+          description: "PDB {{ $labels.namespace }}/{{ $labels.poddisruptionbudget }} 已连续 15 分钟没有达到期望健康 Pod 数，可能阻塞节点 drain 或集群升级。"
+
+      - alert: Kubernetes资源配额即将用尽
+        expr: |
+          (
+            kube_resourcequota{type="used"}
+            / ignoring (type)
+            kube_resourcequota{type="hard"} > 0.90
+          )
+          and
+          (
+            kube_resourcequota{type="used"}
+            / ignoring (type)
+            kube_resourcequota{type="hard"} <= 1
+          )
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Namespace ResourceQuota 使用率超过 90%"
+          description: "Namespace {{ $labels.namespace }} 的 {{ $labels.resource }} 配额使用率已连续 15 分钟处于 90%～100%，当前={{ $value | humanizePercentage }}。"
+
+      - alert: Kubernetes资源配额已超限
+        expr: |
+          kube_resourcequota{type="used"}
+          / ignoring (type)
+          kube_resourcequota{type="hard"} > 1
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Namespace ResourceQuota 数据显示已超限"
+          description: "Namespace {{ $labels.namespace }} 的 {{ $labels.resource }} 配额使用率超过 100%，当前={{ $value | humanizePercentage }}。这通常表示指标或配额状态存在不一致。"

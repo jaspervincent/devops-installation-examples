@@ -1,0 +1,21 @@
+#!/bin/bash
+#
+if [ $# -ge 1 ]; then
+   [[ $2 =~ "kubeconfig" ]] && config=$2 ||:
+   n_list=$(kubectl $config  get ns -o jsonpath='{.items[*].metadata.name}'|tr ' ' '\n'|sort |awk '{printf("%-4d%s\n", NR, $0)}')
+   echo -e "\e[31mPlease execute the command:\e[0m \e[1;32m source podnamespace [anyone]\e[0m"
+   echo "${n_list}"
+   echo -n "Choose a namespace: "
+   read no
+   namespace=$(echo "${n_list}"| awk '{print $2}'|sed -n "${no}p")
+   export namespace
+   echo Namespace: $namespace
+fi
+
+[ $# -eq 0 ] && {
+namespace=monitoring
+export namespace
+#p=$(ps -fp $(echo $$) |sed '1d'|awk '{print $3}')
+#echo -e "\e[31mSwitching Namespaces:\e[0m \e[1;32m source podnamespace [anyone]\e[0m" >/proc/$p/fd/2
+echo Namespace: $namespace
+} || :

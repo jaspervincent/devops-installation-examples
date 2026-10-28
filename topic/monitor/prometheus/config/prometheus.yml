@@ -1,0 +1,98 @@
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+  external_labels:
+    prom_cluster: db-prom
+
+storage:
+  tsdb:
+    out_of_order_time_window: 30m
+
+alerting:
+  alertmanagers:
+  - follow_redirects: true
+    scheme: http
+    timeout: 10s
+    api_version: v2
+    static_configs:
+    - targets:
+      - alertmanager:9093
+
+rule_files:
+- /etc/prometheus/rules/*.yml
+
+
+scrape_configs:
+- job_name: 'prometheus'
+  scrape_interval: 1m
+  static_configs:
+  - targets: ['localhost:9090']
+
+- job_name: 'cadvisor'
+  scrape_interval: 5s
+  static_configs:
+  - targets: ['cadvisor:8080']
+
+- job_name: node-exporter
+  static_configs:
+  - targets: ['node-exporter:9100']
+
+- job_name: 'blackbox-exporter'
+  static_configs:
+  - targets: ['blackbox-exporter:9115']
+- job_name: domain-url
+  scrape_interval: 30s
+  scrape_timeout: 20s
+  metrics_path: /probe
+  params:
+    modelue: [http_2xx]
+  static_configs:
+  # 内网不互通
+  #- targets:
+  #    - http://argocd.xxx.com/login
+  #  labels:
+  #    bussiness: ops
+  #    serverty: info
+  - targets:
+      - https://jp.xxx.com/api/
+    labels:
+      bussiness: db
+      service: web
+      serverty: info
+  relabel_configs:
+  - source_labels: [__address__]
+    target_label: __param_target
+  - source_labels: [__param_target]
+    target_label: instance
+  - target_label: __address__
+    replacement: blackbox-exporter:9115
+  - source_labels: [instance]
+    regex: https?://(.*)
+    replacement: "$1"
+    target_label: target
+
+- job_name: aws-cloudwatch
+  scrape_interval: 60s
+  scrape_timeout: 30s
+
+  static_configs:
+    - targets:
+        - yace:5000
+
+- job_name: 'aliyun-cms'
+  scrape_interval: 240s
+  scrape_timeout: 120s
+  static_configs:
+    - targets: ['aliyun-exporter-sg:9525']
+      labels:
+        cloud_provider: aliyun
+        cloud_account: jp-aliyun-01
+        cloud_account_id: "xxx"
+        environment: prod
+    - targets: ['aliyun-exporter-hk:9525']
+      labels:
+        cloud_provider: aliyun
+        cloud_account: jp-aliyun-01
+        cloud_account_id: "xxx"
+        environment: prod

@@ -1,0 +1,849 @@
+#cloudwatch-prometheus-cloudwatch-exporter config.yml:
+region: us-west-2
+period_seconds: 30
+metrics:
+#elasticche
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: CPUUtilization
+  aws_dimensions: [CacheClusterId]
+  aws_tag_select:
+    tag_selections:
+      Owner: ["ciciname.tt"]
+    resource_type_selection: elasticache
+    resource_id_dimension: Tags
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: EngineCPUUtilization
+  aws_dimensions: [CacheClusterId]
+  aws_dimension_select_regex:
+    cache_cluster_id: ["test-.*"]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: BytesUsedForCache
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: CurrConnections
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: NewConnections
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: DatabaseMemoryUsagePercentage
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: NetworkBytesIn
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: NetworkBytesOut
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: FreeableMemory
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: CacheHits
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: CacheMisses
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: ReplicationLag
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: MemoryFragmentationRatio
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: IsMaster
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: CacheHitRate
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: StringBasedCmdsLatency
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: SortedSetBasedCmdsLatency
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: HashBasedCmdsLatency
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: SetBasedCmdsLatency
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: GetTypeCmdsLatency
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: KeyBasedCmdsLatency
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: ListBasedCmdsLatency
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: SetTypeCmdsLatency
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: StringBasedCmds
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: SetBasedCmds
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: SetTypeCmds
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: GetTypeCmds
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: ListBasedCmds
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: SortedSetBasedCmds
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: EvalBasedCmds
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: HashBasedCmds
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: KeyBasedCmds
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+- aws_namespace: AWS/ElastiCache
+  aws_metric_name: CurrItems
+  aws_dimensions: [CacheClusterId]
+  aws_statistics: [Minimum,Maximum,Average]
+
+#RDS
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: DatabaseConnections
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Maximum
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: FreeStorageSpace
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: FreeableMemory
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: CPUUtilization
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: ReadIOPS
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: WriteIOPS
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: ReadLatency
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: WriteLatency
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: ReadThroughput
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: WriteThroughput
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: CPUCreditUsage
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: CPUCreditBalance
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: DiskQueueDepth
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: NetworkTransmitThroughput
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: NetworkReceiveThroughput
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: TransactionLogsDiskUsage
+  aws_namespace: AWS/RDS
+  aws_statistics:
+  - Average
+
+#ES
+- aws_namespace: AWS/ES
+  aws_metric_name: ClusterStatus.green
+  aws_dimensions: [DomainName, ClientId]
+  aws_statistics: [Maximum]
+- aws_namespace: AWS/ES
+  aws_metric_name: ClusterStatus.yellow
+  aws_dimensions: [DomainName, ClientId]
+  aws_statistics: [Maximum]
+- aws_namespace: AWS/ES
+  aws_metric_name: ClusterStatus.red
+  aws_dimensions: [DomainName, ClientId]
+  aws_statistics: [Maximum]
+- aws_namespace: AWS/ES
+  aws_metric_name: ClusterIndexWritesBlocked-green
+  aws_dimensions: [DomainName, ClientId]
+  aws_statistics: [Maximum]
+- aws_namespace: AWS/ES
+  aws_metric_name: ClusterIndexWritesBlocked-rd
+  aws_dimensions: [DomainName, ClientId]
+  aws_statistics: [Maximum]
+- aws_namespace: AWS/ES
+  aws_metric_name: ClusterIndexWritesBlocked-rd
+  aws_dimensions: [DomainName, ClientId]
+  aws_statistics: [Maximum]
+- aws_namespace: AWS/ES
+  aws_metric_name: CPUUtilization  
+  aws_dimensions: [DomainName, ClientId]
+  aws_statistics: [Maximum]
+
+#DocumentDB
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: CPUUtilization
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: DatabaseConnections
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Maximum
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: FreeableMemory
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: WriteIOPS
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Sum
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: ReadIOPS
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Sum
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: WriteLatency
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: ReadLatency
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: ReadThroughput
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: WriteThroughput
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: FreeLocalStorage
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: VolumeBytesUsed
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: DiskQueueDepth
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: NetworkTransmitThroughput
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: NetworkReceiveThroughput
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: DatabaseCursors
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: DatabaseCursorsMax
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: DatabaseCursorsTimedOut
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: BufferCacheHitRatio
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: IndexBufferCacheHitRatio
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: CPUCreditBalance
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: CPUCreditUsage
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: OpcountersDelete
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: OpcountersCommand
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: OpcountersGetmore
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: OpcountersQuery
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: OpcountersUpdate
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: DBInstanceReplicaLag
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+- aws_dimensions:
+  - DBInstanceIdentifier
+  aws_metric_name: DBClusterReplicaLagMaximum
+  aws_namespace: AWS/DocDB
+  aws_statistics:
+    - Average
+
+#NATGateway
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: ActiveConnectionCount
+  aws_namespace: AWS/NATGateway
+  aws_statistics: [Maximum]
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: BytesInFromDestination
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: BytesInFromSource
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: BytesOutToDestination
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: BytesOutToSource
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: ConnectionAttemptCount
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+  - aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: ConnectionEstablishedCount
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: IdleTimeoutCount
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: PacketsDropCount
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: PacketsInFromDestination
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: PacketsInFromSource
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: PacketsOutToDestination
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - NatGatewayId
+  aws_metric_name: PacketsOutToSource
+  aws_namespace: AWS/NATGateway
+  aws_statistics:
+  - Sum
+
+#AWS/ApplicationELB
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: HealthyHostCount
+  aws_dimensions:
+  - LoadBalancer
+  - TargetGroup
+  aws_statistics:
+  - Minimum
+  # In case you want to use some tag to select target group to monitor, or to have additional `info` metric
+  # with all target group tags as labels, use `aws_tag_select`.
+  # Since the TargetGroup dimension doesn't follow the convention for how to extract resource ids from ARN
+  # `arn_resource_id_regexp` is specified with an alternative regular expression.
+  aws_tag_select:
+    resource_type_selection: elasticloadbalancing:targetgroup
+    resource_id_dimension: TargetGroup
+    arn_resource_id_regexp: "(targetgroup/.*)$"
+    tag_selections:
+      Environment:
+      - production
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: UnHealthyHostCount
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: RequestCount
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Average
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: TargetResponseTime
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Average
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: ActiveConnectionCount
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: NewConnectionCount
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: RejectedConnectionCount
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: TargetConnectionErrorCount
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: RequestCount
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: IPv6RequestCount
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: RequestCountPerTarget
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: NonStickyRequestCount
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: HTTPCode_Target_2XX_Count
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: HTTPCode_Target_3XX_Count
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: HTTPCode_Target_4XX_Count
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: HTTPCode_Target_5XX_Count
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: HTTPCode_ELB_3XX_Count
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: HTTPCode_ELB_4XX_Count
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: HTTPCode_ELB_5XX_Count
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: ProcessedBytes
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: IPv6ProcessedBytes
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: ConsumedLCUs
+  # ALBs take 30 minutes to report this metrics.
+  delay_seconds: 1800
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: ClientTLSNegotiationErrorCount
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: TargetTLSNegotiationErrorCount
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+- aws_namespace: AWS/ApplicationELB
+  aws_metric_name: RuleEvaluations
+  aws_dimensions:
+  - LoadBalancer
+  aws_statistics:
+  - Sum
+
+#NetwrokELB
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: ActiveFlowCount
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: ActiveFlowCount_TCP
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: ActiveFlowCount_UDP
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: ClientTLSNegotiationErrorCount
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - LoadBalancer
+  aws_metric_name: ConsumedLCUs
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - LoadBalancer
+  aws_metric_name: ConsumedLCUs_TCP
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - LoadBalancer
+  aws_metric_name: ConsumedLCUs_TLS
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - LoadBalancer
+  aws_metric_name: ConsumedLCUs_UDP
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Average
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: HealthyHostCount
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Minimum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: NewFlowCount
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: NewFlowCount_TCP
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: NewFlowCount_TLS
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: NewFlowCount_UDP
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: ProcessedBytes
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: ProcessedBytes_TLS
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: ProcessedBytes_UDP
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: ProcessedPackets
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: TargetTLSNegotiationErrorCount
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: TCP_Client_Reset_Count
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: TCP_Target_Reset_Count
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Sum
+- aws_dimensions:
+  - AvailabilityZone
+  - LoadBalancer
+  - TargetGroup
+  aws_metric_name: UnHealthyHostCount
+  aws_namespace: AWS/NetworkELB
+  aws_statistics:
+  - Maximum

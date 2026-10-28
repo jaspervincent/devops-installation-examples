@@ -1,0 +1,352 @@
+groups:
+  - name: 阿里云 RDS（云监控）
+    interval: 60s
+    rules:
+      - alert: RDS采集失败
+        expr: aliyun_acs_rds_dashboard_CpuUsage_up == 0
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 指标采集失败"
+          description: "aliyun-exporter 已连续 12 分钟无法从云监控获取 RDS 指标，该实例组的所有 RDS 告警当前不可信。"
+
+      - alert: RDS_CPU使用率过高
+        expr: |
+          aliyun_acs_rds_dashboard_CpuUsage * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 80
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS CPU 使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的 CPU 使用率已持续 12 分钟超过 80%，当前={{ $value | printf \"%.2f\" }}%。"
+
+      - alert: RDS内存使用率过高
+        expr: |
+          aliyun_acs_rds_dashboard_MemoryUsage * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 85
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 内存使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的内存使用率已持续 12 分钟超过 85%，当前={{ $value | printf \"%.2f\" }}%。"
+
+      - alert: RDS磁盘使用率过高
+        expr: |
+          aliyun_acs_rds_dashboard_DiskUsage * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 80
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 磁盘使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的磁盘使用率已持续 12 分钟超过 80%，当前={{ $value | printf \"%.2f\" }}%。"
+
+      - alert: RDS磁盘空间即将耗尽
+        expr: |
+          aliyun_acs_rds_dashboard_DiskUsage * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 90
+        for: 12m
+        labels:
+          severity: critical
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 磁盘空间即将耗尽"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的磁盘使用率已持续 12 分钟超过 90%，当前={{ $value | printf \"%.2f\" }}%，磁盘写满会导致实例锁定为只读，请立即扩容或清理。"
+
+      - alert: RDS连接数使用率过高
+        expr: |
+          aliyun_acs_rds_dashboard_ConnectionUsage * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 85
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 连接数使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的连接数使用率已持续 12 分钟超过 85%，当前={{ $value | printf \"%.2f\" }}%。"
+
+      - alert: RDS_IOPS使用率过高
+        expr: |
+          aliyun_acs_rds_dashboard_IOPSUsage * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 85
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS IOPS 使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的 IOPS 使用率已持续 12 分钟超过 85%，当前={{ $value | printf \"%.2f\" }}%，存储已接近规格上限。"
+
+      - alert: RDS慢查询突增
+        expr: |
+          aliyun_acs_rds_dashboard_MySQL_SlowQueries * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 1
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 慢查询突增"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的慢查询速率已持续 12 分钟超过 1 条/秒，当前={{ $value | printf \"%.2f\" }} 条/秒，请查看慢日志定位具体 SQL。"
+
+      - alert: RDS主从延迟过高
+        expr: |
+          aliyun_acs_rds_dashboard_DataDelay * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 30
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 主从延迟过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的主从延迟已持续 12 分钟超过 30 秒，当前={{ $value | printf \"%.2f\" }} 秒。"
+
+      - alert: RDS主从延迟严重
+        expr: |
+          aliyun_acs_rds_dashboard_DataDelay * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 300
+        for: 12m
+        labels:
+          severity: critical
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 主从延迟严重"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的主从延迟已持续 12 分钟超过 300 秒，当前={{ $value | printf \"%.2f\" }} 秒，只读实例的数据已显著落后于主库。"
+
+      - alert: RDS复制IO线程停止
+        expr: |
+          aliyun_acs_rds_dashboard_MySQL_SlaveIORunning * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info == 0
+        for: 12m
+        labels:
+          severity: critical
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 复制 IO 线程已停止"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的复制 IO 线程已停止超过 12 分钟，主从同步中断。"
+
+      - alert: RDS复制SQL线程停止
+        expr: |
+          aliyun_acs_rds_dashboard_MySQL_SlaveSQLRunning * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info == 0
+        for: 12m
+        labels:
+          severity: critical
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 复制 SQL 线程已停止"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的复制 SQL 线程已停止超过 12 分钟，主从同步中断。"
+
+      - alert: RDS缓冲池命中率过低
+        expr: |
+          aliyun_acs_rds_dashboard_MySQL_IbufReadHit * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info < 95
+        for: 20m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS InnoDB 缓冲池命中率过低"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的 Buffer Pool 读命中率已持续 20 分钟低于 95%，当前={{ $value | printf \"%.2f\" }}%，大量读请求落到磁盘，可能需要扩内存或优化查询。"
+
+      - alert: RDS行锁等待时间过长
+        expr: |
+          aliyun_acs_rds_dashboard_MySQL_InnoDBRowLockTimePs * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 500
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS InnoDB 行锁等待时间过长"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的行锁等待时间已持续 12 分钟超过 500ms/s，当前={{ $value | printf \"%.2f\" }}ms/s，存在明显的行级锁竞争。"
+
+      - alert: RDS元数据锁堆积
+        expr: |
+          aliyun_acs_rds_dashboard_MySQL_MDLLockSession * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 0
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 元数据锁会话堆积"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 存在 {{ $value | printf \"%.2f\" }} 个被元数据锁阻塞的会话，持续超过 12 分钟，通常由未提交事务阻塞 DDL 引起。"
+
+      - alert: RDS运行线程数过高
+        expr: |
+          aliyun_acs_rds_dashboard_MySQL_ThreadsRunning * on(instanceId) group_left(project, RegionId, DBInstanceDescription, DBInstanceType) aliyun:rds_info > 16
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "RDS 并发运行线程数过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.DBInstanceDescription }} ({{ $labels.instanceId }}) 的并发运行线程数已持续 12 分钟超过 16，当前={{ $value | printf \"%.2f\" }}，数据库可能正在排队。"
+
+  - name: 阿里云 Redis（云监控）
+    interval: 60s
+    rules:
+      - alert: Redis采集失败
+        expr: aliyun_acs_kvstore_CpuUsage_up == 0
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 指标采集失败"
+          description: "aliyun-exporter 已连续 12 分钟无法从云监控获取 Redis 指标，该实例组的所有 Redis 告警当前不可信。"
+
+      - alert: Redis_CPU使用率过高
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_CpuUsage, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info > 80
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis CPU 使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 的 CPU 使用率已持续 12 分钟超过 80%，当前={{ $value | printf \"%.2f\" }}%。"
+
+      - alert: Redis内存使用率过高
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_MemoryUsage, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info > 85
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 内存使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 的内存使用率已持续 12 分钟超过 85%，当前={{ $value | printf \"%.2f\" }}%，继续增长会触发 key 淘汰。"
+
+      - alert: Redis连接数使用率过高
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_ConnectionUsage, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info > 85
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 连接数使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 的连接数使用率已持续 12 分钟超过 85%，当前={{ $value | printf \"%.2f\" }}%。"
+
+      - alert: Redis内网入带宽使用率过高
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_IntranetInRatio, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info > 80
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 内网入带宽使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 的内网入带宽使用率已持续 12 分钟超过 80%，当前={{ $value | printf \"%.2f\" }}%。"
+
+      - alert: Redis内网出带宽使用率过高
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_IntranetOutRatio, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info > 80
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 内网出带宽使用率过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 的内网出带宽使用率已持续 12 分钟超过 80%，当前={{ $value | printf \"%.2f\" }}%。"
+
+      - alert: Redis集群版发生Key淘汰
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_ShardingEvictedKeysPerSecond, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info > 0
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 正在淘汰 Key"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 正在以 {{ $value | printf \"%.2f\" }} 个/秒的速率淘汰 key，持续超过 12 分钟，说明内存已不足，请扩容或检查 key 过期策略。"
+
+      - alert: Redis标准版发生Key淘汰
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_StandardEvictedKeysPerSecond, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info > 0
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 正在淘汰 Key"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 正在以 {{ $value | printf \"%.2f\" }} 个/秒的速率淘汰 key，持续超过 12 分钟，说明内存已不足，请扩容或检查 key 过期策略。"
+
+      - alert: Redis集群版命中率过低
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_ShardingHitRate, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info < 50
+        for: 30m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 缓存命中率过低"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 的缓存命中率已持续 30 分钟低于 50%，当前={{ $value | printf \"%.2f\" }}%，大量请求正在穿透到后端。低流量实例命中率波动较大，请结合 QPS 判断。"
+
+      - alert: Redis标准版命中率过低
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_StandardHitRate, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info < 50
+        for: 30m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 缓存命中率过低"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 的缓存命中率已持续 30 分钟低于 50%，当前={{ $value | printf \"%.2f\" }}%，大量请求正在穿透到后端。低流量实例命中率波动较大，请结合 QPS 判断。"
+
+      - alert: Redis集群版响应时间过高
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_ShardingAvgRt, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info > 5000
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 平均响应时间过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 的平均响应时间已持续 12 分钟超过 5ms，当前={{ $value | printf \"%.2f\" }} 微秒。"
+
+      - alert: Redis标准版响应时间过高
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_StandardAvgRt, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info > 5000
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 平均响应时间过高"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 的平均响应时间已持续 12 分钟超过 5ms，当前={{ $value | printf \"%.2f\" }} 微秒。"
+
+      - alert: Redis命令执行失败
+        expr: |
+          label_replace(label_replace(label_replace(aliyun_acs_kvstore_FailedCount, "baseId", "$1", "instanceId", "(r-[a-z0-9]+)(?:-db-[0-9]+)?"), "shard", "$1", "instanceId", ".*-db-([0-9]+)"), "shard", "$1", "nodeId", ".*-db-([0-9]+)") * on(baseId) group_left(project, RegionId, InstanceName) aliyun:redis_info > 0
+        for: 12m
+        labels:
+          severity: warning
+          team: dba
+          cloud: aliyun
+        annotations:
+          summary: "Redis 存在执行失败的命令"
+          description: "[{{ $labels.project }}/{{ $labels.environment }}] {{ $labels.InstanceName }} 分片{{ $labels.shard }} 正在以 {{ $value | printf \"%.2f\" }} 次/秒的速率出现命令执行失败，持续超过 12 分钟。"

@@ -1,0 +1,12 @@
+# https://github.com/qonto/prometheus-rds-exporter
+
+IAM_POLICY_NAME=prometheus-rds-exporter
+
+# Download policy payload
+curl --fail --silent --write-out "Reponse code: %{response_code}\n" https://raw.githubusercontent.com/qonto/prometheus-rds-exporter/main/configs/aws/policy.json -o /tmp/prometheus-rds-exporter.policy.json
+
+# Create IAM policy
+aws iam create-policy --policy-name ${IAM_POLICY_NAME} --policy-document file:///tmp/prometheus-rds-exporter.policy.json
+
+#deploy
+kubectl apply -f prometheus-rds-exporter.yaml

@@ -1,0 +1,166 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-app
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: java-log-gen
+  namespace: demo-app
+data:
+  gen.sh: |
+    #!/bin/sh
+    # 模拟 Spring Boot 风格日志，含多行异常堆栈
+    SVC="${SERVICE_NAME:-order-service}"
+    i=0
+    while true; do
+      i=$((i+1))
+      TS=$(date '+%Y-%m-%d %H:%M:%S.000')
+      THREAD="http-nio-8080-exec-$((i % 8 + 1))"
+      case $((i % 12)) in
+        0|1|2|3|4|5)
+          echo "$TS  INFO $$ --- [$THREAD] c.example.${SVC}.OrderController      : Received order request orderId=$((RANDOM)) userId=$((RANDOM % 1000))"
+          ;;
+        6|7)
+          echo "$TS  INFO $$ --- [$THREAD] c.example.${SVC}.PaymentService       : Payment processed amount=$((RANDOM % 500)).00 durationMs=$((RANDOM % 200))"
+          ;;
+        8)
+          echo "$TS  WARN $$ --- [$THREAD] c.example.${SVC}.InventoryService     : Stock level low sku=SKU-$((RANDOM % 100)) remaining=$((RANDOM % 5))"
+          ;;
+        9)
+          echo "$TS DEBUG $$ --- [$THREAD] c.example.${SVC}.CacheManager         : Cache hit ratio=0.$((RANDOM % 99))"
+          ;;
+        10)
+          echo "$TS ERROR $$ --- [$THREAD] c.example.${SVC}.OrderController      : Failed to process order orderId=$((RANDOM))"
+          echo "java.lang.NullPointerException: Cannot invoke \"com.example.Order.getItems()\" because \"order\" is null"
+          echo "	at com.example.${SVC}.OrderService.validate(OrderService.java:87)"
+          echo "	at com.example.${SVC}.OrderService.process(OrderService.java:45)"
+          echo "	at com.example.${SVC}.OrderController.create(OrderController.java:32)"
+          echo "	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:103)"
+          echo "	at org.springframework.web.method.support.InvocableHandlerMethod.doInvoke(InvocableHandlerMethod.java:255)"
+          echo "Caused by: java.sql.SQLException: Connection timed out after 30000ms"
+          echo "	at com.zaxxer.hikari.pool.HikariPool.createTimeoutException(HikariPool.java:696)"
+          echo "	... 12 common frames omitted"
+          ;;
+        11)
+          echo "$TS ERROR $$ --- [$THREAD] c.example.${SVC}.PaymentService       : Payment gateway timeout gatewayId=PG-$((RANDOM % 10)) retries=3"
+          ;;
+      esac
+      sleep 2
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: demo-app
+  labels: {app: order-service, language: java}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: order-service}
+  template:
+    metadata:
+      # 不需要标注多行合并：Alloy 对所有 Pod 日志统一做 multiline，
+      # 靠 firstline 正则区分「新记录」和「续行」，见 alloy/config.alloy。
+      labels: {app: order-service, language: java}
+    spec:
+      containers:
+        - name: app
+          image: docker.io/nginxinc/nginx-unprivileged:1.31-alpine
+          command: ["/bin/sh", "/scripts/gen.sh"]
+          env:
+            - {name: SERVICE_NAME, value: order-service}
+          volumeMounts:
+            - {name: scripts, mountPath: /scripts}
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {memory: 64Mi}
+      volumes:
+        - name: scripts
+          configMap: {name: java-log-gen, defaultMode: 0755}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: demo-app
+  labels: {app: user-service, language: java}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: user-service}
+  template:
+    metadata:
+      labels: {app: user-service, language: java}
+    spec:
+      containers:
+        - name: app
+          image: docker.io/nginxinc/nginx-unprivileged:1.31-alpine
+          command: ["/bin/sh", "/scripts/gen.sh"]
+          env:
+            - {name: SERVICE_NAME, value: user-service}
+          volumeMounts:
+            - {name: scripts, mountPath: /scripts}
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {memory: 64Mi}
+      volumes:
+        - name: scripts
+          configMap: {name: java-log-gen, defaultMode: 0755}
+---
+# 一个产生 nginx access log 的服务
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-log-gen
+  namespace: demo-app
+data:
+  gen.sh: |
+    #!/bin/sh
+    PATHS="/api/orders /api/users /api/products /health /api/checkout /static/app.js"
+    CODES="200 200 200 200 200 201 304 400 404 500 502"
+    i=0
+    while true; do
+      i=$((i+1))
+      P=$(echo $PATHS | tr ' ' '\n' | sed -n "$((RANDOM % 6 + 1))p")
+      C=$(echo $CODES | tr ' ' '\n' | sed -n "$((RANDOM % 11 + 1))p")
+      M=$(if [ $((i % 4)) -eq 0 ]; then echo POST; else echo GET; fi)
+      # %z 自动跟随容器时区。原先这里硬编码 +0000，
+      # 挂了东八区时区文件后会变成"时间是北京时间却标着 +0000"的自相矛盾。
+      TS=$(date '+%d/%b/%Y:%H:%M:%S %z')
+      echo "10.244.$((RANDOM % 5)).$((RANDOM % 254)) - - [$TS] \"$M $P HTTP/1.1\" $C $((RANDOM % 5000)) \"-\" \"Mozilla/5.0\" $((RANDOM % 999))"
+      sleep 1
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-gateway
+  namespace: demo-app
+  labels: {app: web-gateway, language: nginx}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: web-gateway}
+  template:
+    metadata:
+      labels: {app: web-gateway, language: nginx}
+    spec:
+      containers:
+        - name: nginx
+          image: docker.io/nginxinc/nginx-unprivileged:1.31-alpine
+          command: ["/bin/sh", "/scripts/gen.sh"]
+          volumeMounts:
+            - {name: scripts, mountPath: /scripts}
+            # 东八区：Alpine 镜像没有 tzdata，必须挂宿主机的时区文件
+            - {name: tz-shanghai, mountPath: /etc/localtime, readOnly: true}
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {memory: 64Mi}
+      volumes:
+        - name: scripts
+          configMap: {name: nginx-log-gen, defaultMode: 0755}
+        - name: tz-shanghai
+          hostPath: {path: /usr/share/zoneinfo/Asia/Shanghai, type: File}

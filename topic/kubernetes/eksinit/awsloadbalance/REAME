@@ -1,0 +1,14 @@
+https://docs.aws.amazon.com/zh_cn/eks/latest/userguide/lbc-manifest.html
+
+```bash
+#步骤 1：配置 IAM
+
+#步骤 2：安装 cert-manager
+
+#步骤 3：安装 AWS Load Balancer Controller
+
+#步骤 4：验证控制器是否已安装
+
+kubectl get deployment -n kube-system aws-load-balancer-controller
+```
+

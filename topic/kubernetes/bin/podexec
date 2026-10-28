@@ -1,0 +1,19 @@
+#!/bin/bash
+: ${namespace:=$(podnamespace|awk '/Namespace: /{print $2}')}
+app_name=$1
+
+# kubectl -n ${namespace} get pods -o wide|grep ${app_name}
+pods=$(kubectl -n ${namespace} get pods -o wide|grep ${app_name}|awk '{printf("%-4d%s\t%s\t%s\t%s\t%s\t%s\n", NR, $1, $2, $3, $5, $6, $7)}')
+echo "${pods}"
+echo -n "Choose a pod: "
+read no
+pod=$(echo "${pods}"|awk '{print $2}'|sed -n "${no}p")
+if ! kubectl  get po -n $namespace $pod -o jsonpath="{.spec['containers'][1].name}" &>/dev/null; then 
+  kubectl -n ${namespace} exec -ti "${pod}" -- bash  2>/dev/null || kubectl -n ${namespace} exec -it $pod -- sh
+else
+  cat -n <(kubectl  get po -n $namespace $pod -o jsonpath="{.spec['containers'][*].name}"|tr ' ' '\n')
+  echo
+  read -p "Please input container number: " no 
+  container_name=$(kubectl -n $namespace get po $pod -o jsonpath="{.spec.containers[$[no-1]].name}")
+  kubectl -n ${namespace} exec -ti "${pod}" -c ${container_name}  -- bash  2>/dev/null || kubectl -n ${namespace} exec -it $pod -c ${container_name} -- sh
+fi

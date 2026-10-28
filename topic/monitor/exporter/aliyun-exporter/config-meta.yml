@@ -1,0 +1,8 @@
+rate_limit: 5      # 每秒 API 调用上限，云监控有限流，别调大
+pool_size: 10
+
+metrics: {}
+
+info_metrics:
+  - rds
+  - redis

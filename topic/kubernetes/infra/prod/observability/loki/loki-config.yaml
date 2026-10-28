@@ -1,0 +1,94 @@
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+  replication_factor: 1
+
+  ring:
+    kvstore:
+      store: inmemory
+
+ruler:
+  storage:
+    type: local
+    local:
+       directory: /etc/loki/rules
+
+  # Loki Ruler 将告警发送到这里
+  alertmanager_url: http://10.50.22.46:9093
+  enable_alertmanager_v2: true
+
+  external_labels:
+    cluster: jp-aws-01
+    alert_source: loki
+
+  # 开放 Ruler API，Grafana 可以读取告警规则
+  enable_api: true
+
+  evaluation_interval: 1m
+  poll_interval: 1m
+
+  # Ruler 运行时临时目录，不是规则文件目录
+  rule_path: /loki/rules-temp
+
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: "2024-01-01"
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  filesystem:
+    directory: /loki/chunks
+
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 20
+
+  delete_request_store: filesystem
+
+limits_config:
+  # 日志保留 30 天
+  retention_period: 720h
+
+  allow_structured_metadata: true
+  volume_enabled: true
+
+  ingestion_rate_mb: 4
+  ingestion_burst_size_mb: 8
+
+  per_stream_rate_limit: 3MB
+  per_stream_rate_limit_burst: 6MB
+
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+
+analytics:
+  reporting_enabled: false

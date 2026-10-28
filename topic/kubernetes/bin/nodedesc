@@ -1,0 +1,17 @@
+#!/bin/bash
+: ${namespace:=$(podnamespace|awk '/Namespace: /{print $2}')}
+
+keywords=$1  #example node_ip
+resource_type="node"
+print_format="%-4s%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n"
+#fields_index="$1, $2, $4, $5, $6, $8, $9, $10, $11"
+
+title=$(printf ${print_format} "" "NAME" "STATUS" "AGE" "VERSION" "INTERNAL-IP" "OS-IMAGE" "KERNEL-VERSION" "CONTAINER-RUNTIME")
+echo "${title}"
+lines=$(kubectl -n ${namespace} get ${resource_type} -o wide -l kubernetes.io/os=linux | grep -E ${keywords} | awk -v format=${print_format} -v fields=${fields_index} '{printf(format, NR, $1, $2, $4, $5, $6, $8, $9, $10, $11)}')
+echo "${lines}"
+echo -n "Choose a ${resource_type}: "
+read no
+selected=$(echo "${lines}" | awk '{print $2}' | sed -n "${no}p")
+kubectl -n ${namespace} describe ${resource_type} "${selected}"
+

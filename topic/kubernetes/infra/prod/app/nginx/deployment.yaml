@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: jp-front
+  name: jp-front
+  namespace: jp-front
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jp-front
+  template:
+    metadata:
+      labels:
+        app: jp-front
+    spec:
+      containers:
+      - image: 10.50.22.47/jp-java/jp-web:3
+        imagePullPolicy: IfNotPresent
+        name: jp-front
+        ports:
+        - containerPort: 80
+          name: app-port-80
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+        volumeMounts:
+        - mountPath: /etc/localtime
+          name: volume-localtime
+        - mountPath: /etc/nginx/nginx.conf
+          name: nginx-config
+          readOnly: true
+          subPath: nginx.conf
+        - mountPath: /etc/nginx/conf.d/
+          name: conf
+      imagePullSecrets:
+      - name: jp-harbor
+      volumes:
+      - hostPath:
+          path: /etc/localtime
+          type: ""
+        name: volume-localtime
+      - configMap:
+          defaultMode: 420
+          items:
+          - key: nginx.conf
+            path: nginx.conf
+          name: jp-front-cm
+        name: nginx-config
+      - configMap:
+          defaultMode: 420
+          items:
+          - key: default.conf
+            path: default.conf
+          name: jp-front-cm
+        name: conf

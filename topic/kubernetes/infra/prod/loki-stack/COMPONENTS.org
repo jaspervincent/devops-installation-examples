@@ -1,0 +1,283 @@
+#+title: Loki 各组件作用与数据流
+#+subtitle: 组件职责、故障影响速查
+#+startup: content indent
+#+options: toc:2 num:nil
+
+* Loki 微服务模式 — 各组件作用说明
+对应本集群实际部署（chart loki-18.13.5 / Loki 3.7.8，=deploymentMode: Distributed=）。
+表中的内存是实测值，不是配置值。
+
+--------------
+
+** 一、整体数据流
+#+begin_example
+                          ┌──────────────── 写路径 ────────────────┐
+
+  Alloy (DaemonSet x5)          Alloy-events (Deployment x1)
+   Pod 日志 + 宿主机 journal      Kubernetes Events（集群级，故只跑 1 副本）
+       │                               │
+       │ HTTP push，带 X-Scope-OrgID: jasper
+       ▼                               ▼
+  loki-gateway  (nginx, ClusterIP)          ← 集群内入口，按 URL 路径分发
+       │
+       ▼
+  distributor x2 ──校验/限流/按流哈希──► ingester x3   (RF=3，每条日志写 3 份)
+       │                                      │
+       │                                      │ 攒够/超时 → flush
+       └──► pattern-ingester x1               ▼
+            (日志模式挖掘)              MinIO (chunks + index)
+                                              ▲
+                                              │ 周期性压缩、执行保留策略
+                                        compactor x1
+
+
+                          ┌──────────────── 读路径 ────────────────┐
+
+  Grafana (集群外)
+       │ HTTP query，带 X-Scope-OrgID: jasper
+       ▼
+  loki-read-gateway (nginx, LoadBalancer 10.0.0.12)   ← 只读，push/管理接口 403
+       │
+       ▼
+  query-frontend x1 ──拆分/缓存──► query-scheduler x1 ──排队──► querier x2
+                                                                   │
+                                          ┌────────────────────────┼────────────────┐
+                                          ▼                        ▼                ▼
+                                    ingester x3            index-gateway x1      MinIO
+                                  (查内存中最新数据)        (查索引，带本地缓存)   (查历史 chunk)
+
+       ruler x1 ──独立执行告警规则──► 查询同上 ──► 推送告警到 Alertmanager
+#+end_example
+
+*一句话概括*：写路径把日志分片复制到多个 ingester 再落对象存储；
+读路径把大查询拆小、排队、分发给多个 querier 并行执行。
+
+--------------
+
+** 二、写路径组件
+*** distributor（分发器）× 2 — 实测 47~59Mi
+集群的*写入入口*。无状态，可任意扩缩。
+
+- 校验日志（时间戳是否过旧、行是否过长、标签是否合法）
+- 执行租户限流（=ingestion_rate_mb= 等 =limits_config= 配置）
+- 按「租户 + 标签集」算哈希，查 ingester 的 ring，决定这条流该写给哪几个 ingester
+- 按 =replication_factor: 3= 同时写 3 个 ingester，*多数成功（quorum=2）即返回 204*
+
+#+begin_quote
+挂掉影响：写入中断，读不受影响。2 副本是为了避免单点。
+#+end_quote
+
+*** ingester（摄取器）× 3 — 实测 104~105Mi（全栈最吃内存）
+*唯一持有"尚未落盘数据"的组件*，是写路径的核心。
+
+- 在内存中按流（stream）追加日志，攒成 chunk
+- 同时写 WAL 到 =/var/loki/wal=（本集群是 emptyDir）
+- 满足条件时 flush 到 MinIO：chunk 满、=chunk_idle_period= 空闲超时、
+  或 =max_chunk_age= 到期
+- 同时构建 TSDB 索引，周期性上传（=tsdb_shipper.resync_interval: 5m=）
+- *查询最近数据时，querier 会直接来问 ingester*（因为还没落盘）
+
+#+begin_quote
+挂掉影响：RF=3 下挂 1 个无影响（另外 2 个有全量副本）；挂 2 个则写入停止
+（quorum 不足），但数据不丢。优雅重启会 =flush_on_shutdown= 全部落盘。
+#+end_quote
+
+*** pattern-ingester（模式摄取器）× 1 — 实测 72Mi
+挖掘日志的*结构模式*（把 =user 123 login= 和 =user 456 login= 归纳为
+=user <*> login=），供 Grafana 的 Logs Drilldown 使用。
+
+#+begin_quote
+挂掉影响：不影响日志的写入与查询，只是模式分析功能不可用。
+由 =loki.pattern_ingester.enabled: true= 开启，不需要可关掉省资源。
+#+end_quote
+
+--------------
+
+** 三、读路径组件
+*** query-frontend（查询前端）× 1 — 实测 70Mi
+查询的*优化层*，本身不执行查询。
+
+- *拆分*：把跨越多天的大查询按时间切成小块，避免单个查询打爆 querier
+- *缓存*：查询结果写入 results-cache，相同查询直接命中
+- *重试*：失败的子查询自动重试
+- 把拆好的子查询交给 query-scheduler 排队
+
+#+begin_quote
+挂掉影响：查询中断。本集群 1 副本，生产建议 2 副本。
+#+end_quote
+
+*** query-scheduler（查询调度器）× 1 — 实测 39Mi
+一个*队列*。把子查询按租户公平排队，querier 主动来拉取。
+
+- 解耦 frontend 与 querier：querier 数量变化不影响 frontend
+- 避免某个租户的大量查询饿死其他租户
+
+#+begin_quote
+挂掉影响：查询中断。资源占用极小。
+#+end_quote
+
+*** querier（查询器）× 2 — 实测 75~78Mi
+*真正执行 LogQL 的组件*。从 scheduler 拉子查询，然后：
+
+- 向 *ingester* 要最近的、尚未落盘的数据
+- 向 *index-gateway* 要索引，定位需要哪些 chunk
+- 从 *MinIO* 下载 chunk（经 chunks-cache）
+- 执行过滤/聚合，把结果返回给 frontend 合并
+
+#+begin_quote
+挂掉影响：查询变慢；全挂则查询中断。这是读路径主要的扩容点。
+#+end_quote
+
+*** index-gateway（索引网关）× 1 — 实测 44Mi
+集中处理 *TSDB 索引查询*，避免每个 querier 都去 MinIO 下载整套索引。
+
+- 从对象存储拉索引文件，缓存在本地 =/var/loki/tsdb-shipper-cache=
+- querier 通过 gRPC 问它「哪些 chunk 包含这个标签组合」
+
+#+begin_quote
+挂掉影响：查询变慢或失败（querier 拿不到索引）。
+本地缓存丢失只是冷启动变慢，会自动从 S3 重建——所以不需要 PVC。
+#+end_quote
+
+--------------
+
+** 四、后台组件
+*** compactor（压缩器）× 1 — 实测 40Mi
+*必须且只能 1 副本*（多个实例会互相冲突）。
+
+- 把 ingester 上传的大量零散索引文件合并成更少更大的文件，降低查询开销
+- 执行*保留策略*（=retention_period: 672h=），删除过期数据
+- 处理日志删除请求（=delete_request_store: s3=）
+
+#+begin_quote
+挂掉影响：短期无感；长期索引碎片化会让查询变慢，且过期数据不会被清理。
+#+end_quote
+
+*** ruler（规则执行器）× 1 — 实测 72Mi
+周期性执行*告警规则*。
+
+- 从 =/etc/loki/rules/<租户>/= 读规则（本集群挂载外部 ConfigMap =loki-alert-rules=）
+- 每 =interval= 执行一次规则里的 LogQL
+- 条件持续满足 =for= 时长后转为 firing，推送给 Alertmanager
+- =poll_interval: 1m= —— *每分钟重扫规则目录，改 ConfigMap 后自动生效，无需重启*
+
+#+begin_quote
+挂掉影响：告警停止评估，日志读写不受影响。
+#+end_quote
+
+--------------
+
+** 五、网关（两个 nginx）
+*** loki-gateway — ClusterIP，集群内写入入口
+chart 自带的 nginx，按 URL 路径把请求分发到对应组件
+（=/loki/api/v1/push= → distributor，=/loki/api/v1/*= → query-frontend，等等）。
+本集群*不对外暴露*，只给集群内的 Alloy 写入用。
+
+*** loki-read-gateway — LoadBalancer 10.0.0.12，集群外查询入口
+自建的只读 nginx（定义在 values 的 =extraObjects= 里）：
+
+- 放行：=/loki/api/v1/*=、=/api/prom/*= → query-frontend
+- 拒绝 403：=/loki/api/v1/push=、=/api/prom/push=、=/otlp/v1/logs=
+- 拒绝 403：=/config=、=/metrics=、=/ring= 等一切管理接口
+
+给 Grafana 用，把对外暴露面收敛到「只能查、不能写、不能看管理接口」。
+
+--------------
+
+** 六、缓存（memcached）
+| 组件          | 作用                                     | 本集群配置                   |
+|---------------+------------------------------------------+------------------------------|
+| chunks-cache  | 缓存从对象存储下载的 chunk，减少重复下载 | =allocatedMemory: 256=（MB） |
+| results-cache | 缓存查询结果，相同查询直接命中           | =allocatedMemory: 256=（MB） |
+
+这两个是*仅有的 StatefulSet*——memcached 客户端用一致性哈希定位节点，
+需要稳定的 DNS 名。
+
+#+begin_quote
+chart 默认 =allocatedMemory: 8192=（换算成 9830Mi 的 request），
+在 3.2Gi 的节点上永远调度不上，必须调小。
+#+end_quote
+
+--------------
+
+** 七、三个端口的用途
+每个 Loki 组件都监听三个端口：
+
+| 端口   | 协议    | 用途                                                                                 |
+|--------+---------+--------------------------------------------------------------------------------------|
+| *3100* | HTTP    | API（=/loki/api/v1/*=）、=/ready=、=/metrics=、=/config=、=/ring=                    |
+| *9095* | gRPC    | *组件之间的内部通信*。querier 问 ingester 要数据、scheduler 派发子查询，走的都是这个 |
+| *7946* | TCP/UDP | *memberlist gossip*。所有组件靠它维护集群成员关系和各种 ring                         |
+
+--------------
+
+** 八、ring 与 memberlist
+Loki 用 *ring（哈希环）* 做分片与副本定位，成员信息通过 *memberlist*
+（gossip 协议，7946 端口）在所有组件间同步，*不依赖外部 etcd/consul*。
+
+关键的是 *ingester ring*：
+
+- 每个 ingester 启动时生成 128 个随机 token 注册进环
+- distributor 算出「租户+标签集」的哈希，在环上顺时针找 =replication_factor= 个
+  ingester，写入它们
+- querier 也查这个环，才知道该向哪些 ingester 要最近的数据
+
+查看方式：
+
+#+begin_src sh
+kubectl port-forward -n loki svc/loki-distributor 3100:3100 &
+curl -s localhost:3100/ring        # ingester ring，应有 3 个 ACTIVE
+#+end_src
+
+本集群的相关配置（实测自 =/config=）：
+
+| 配置                     | 值         | 含义                                 |
+|--------------------------+------------+--------------------------------------|
+| =replication_factor=     | 3          | 每条日志写 3 个 ingester             |
+| =lifecycler.id=          | pod 主机名 | 实例在环中的标识                     |
+| =tokens_file_path=       | 空         | token 不持久化，每次启动重新生成     |
+| =unregister_on_shutdown= | true       | 优雅退出时主动摘除环内条目，不留僵尸 |
+| =heartbeat_timeout=      | 1m         | 非优雅死亡的条目 1 分钟后失效        |
+| =flush_on_shutdown=      | true       | 优雅退出时把内存数据全部落盘         |
+
+#+begin_quote
+后三项正是本集群能把 ingester 从 StatefulSet 改成 Deployment 的原因：
+pod 名变化不会在环里留下僵尸条目，token 本来也不持久化。
+#+end_quote
+
+--------------
+
+** 九、挂掉之后会怎样（速查）
+| 组件                       | 写入                  | 查询               | 告警                 |
+|----------------------------+-----------------------+--------------------+----------------------|
+| distributor 全挂           | *中断*                | 正常               | 正常                 |
+| ingester 挂 1 个（共 3）   | 正常                  | 正常               | 正常                 |
+| ingester 挂 2 个           | *中断*（quorum 不足） | 最近数据查不全     | 正常                 |
+| query-frontend / scheduler | 正常                  | *中断*             | 正常（ruler 自己查） |
+| querier 全挂               | 正常                  | *中断*             | 受影响               |
+| index-gateway              | 正常                  | *失败或极慢*       | 受影响               |
+| compactor                  | 正常                  | 正常（长期变慢）   | 正常                 |
+| ruler                      | 正常                  | 正常               | *中断*               |
+| pattern-ingester           | 正常                  | 正常               | 正常                 |
+| 缓存（任一）               | 正常                  | 变慢               | 正常                 |
+| loki-gateway               | *中断*                | 正常（走只读网关） | 正常                 |
+| loki-read-gateway          | 正常                  | *集群外中断*       | 正常                 |
+
+--------------
+
+** 十、本集群的副本数与依据
+只有 2 个可调度 worker（3 个 master 带污点），每节点 3.2Gi。
+
+| 组件             | 副本 | 依据                     |
+|------------------+------+--------------------------|
+| ingester         | 3    | 配合 RF=3，可容忍挂 1 个 |
+| distributor      | 2    | 写入入口，避免单点       |
+| querier          | 2    | 读路径主要并发点         |
+| query-frontend   | 1    | 测试环境够用，生产建议 2 |
+| query-scheduler  | 1    | 同上                     |
+| index-gateway    | 1    | 测试环境够用             |
+| compactor        | 1    | *必须为 1*               |
+| ruler            | 1    | 规则量小，1 个够         |
+| pattern-ingester | 1    | 非关键路径               |
+
+实测全栈内存合计约 *1.1Gi*（含两个 memcached），占 2 个 worker 总量（6.4Gi）的 17%。

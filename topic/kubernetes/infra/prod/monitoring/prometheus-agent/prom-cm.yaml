@@ -1,0 +1,249 @@
+apiVersion: v1
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+      scrape_timeout: 10s
+      external_labels:
+        prometheus_agent: bd-ack-01
+        cloud_provider: aliyun
+        bdenvironment: prod
+        project: bd
+        region: __REGION__
+
+    remote_write:
+      - url: http://10.50.22.46:9090/api/v1/write
+        remote_timeout: 30s
+        queue_config:
+          capacity: 10000
+          min_shards: 1
+          max_shards: 20
+          max_samples_per_send: 2000
+          batch_send_deadline: 5s
+          min_backoff: 30ms
+          max_backoff: 5s
+
+    scrape_configs:
+      - job_name: node-exporter
+        static_configs:
+          - targets: ["127.0.0.1:9090"]
+
+      - job_name: kubernetes-apiserver
+        scheme: https
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          server_name: kubernetes.default.svc
+        static_configs:
+          - targets: ["kubernetes.default.svc:443"]
+
+
+      # 与静态 ECS job 使用不同 scrape pool 名，但把最终样本的 job 统一为 node-exporter。
+      - job_name: node-exporter-k8s-discovery
+        honor_labels: false
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - monitoring
+            attach_metadata:
+              node: true
+        relabel_configs:
+          - source_labels:
+              - __meta_kubernetes_pod_label_app_kubernetes_io_name
+            action: keep
+            regex: node-exporter
+
+          - source_labels:
+              - __meta_kubernetes_pod_phase
+            action: keep
+            regex: Running
+
+          - source_labels:
+              - __meta_kubernetes_pod_container_port_number
+            action: keep
+            regex: "9100"
+
+          - target_label: job
+            replacement: node-exporter
+          - target_label: cloud_provider
+            replacement: aws
+          - target_label: cloud_account
+            replacement: "__CLOUD_ACCOUNT__"
+          - target_label: cloud_account_id
+            replacement: "__CLOUD_ACCOUNT_ID__"
+          - target_label: region
+            replacement: __REGION__
+          - source_labels:
+              - __meta_kubernetes_node_label_topology_kubernetes_io_zone
+            target_label: availability_zone
+          - target_label: project
+            replacement: __PROJECT__
+          - target_label: environment
+            replacement: __ENVIRONMENT__
+          - target_label: platform
+            replacement: kubernetes
+          - target_label: cloud_service
+            replacement: __CLOUD_SERVICE__
+          - target_label: resource_type
+            replacement: k8s_node
+          - source_labels:
+              - __meta_kubernetes_pod_node_name
+            target_label: resource_id
+          - source_labels:
+              - __meta_kubernetes_pod_node_name
+            target_label: resource_name
+          - source_labels:
+              - __meta_kubernetes_pod_node_name
+            target_label: node
+          - target_label: cluster_id
+            replacement: "__CLUSTER_ID__"
+          - target_label: cluster_name
+            replacement: "__CLUSTER_ID__"
+
+      - job_name: kube-state-metrics
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names: [monitoring]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_name]
+            action: keep
+            regex: kube-state-metrics
+          - source_labels: [__meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: metrics
+
+          - target_label: cloud_provider
+            replacement: aws
+          - target_label: cloud_account
+            replacement: "__CLOUD_ACCOUNT__"
+          - target_label: cloud_account_id
+            replacement: "__CLOUD_ACCOUNT_ID__"
+          - target_label: region
+            replacement: __REGION__
+          - target_label: project
+            replacement: __PROJECT__
+          - target_label: environment
+            replacement: __ENVIRONMENT__
+          - target_label: platform
+            replacement: kubernetes
+          - target_label: cloud_service
+            replacement: __CLOUD_SERVICE__
+          - target_label: resource_type
+            replacement: k8s_cluster
+          - target_label: cluster_id
+            replacement: "__CLUSTER_ID__"
+          - target_label: cluster_name
+            replacement: "__CLUSTER_ID__"
+
+
+      - job_name: kubelet
+        scheme: https
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          server_name: kubernetes.default.svc
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: __metrics_path__
+            regex: (.+)
+            replacement: /api/v1/nodes/$1/proxy/metrics
+
+
+      - job_name: kubelet-cadvisor
+        honor_labels: false
+        scheme: https
+        metrics_path: /metrics/cadvisor
+        authorization:
+          type: Bearer
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          # 有 kubelet CA 时，应改成 ca_file 并删除 insecure_skip_verify。
+          insecure_skip_verify: true
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels:
+              - __meta_kubernetes_node_address_InternalIP
+            regex: (.+)
+            target_label: __address__
+            replacement: $1:10250
+
+          - target_label: cloud_provider
+            replacement: aliyun
+          - target_label: cloud_account
+            replacement: "__CLOUD_ACCOUNT__"
+          - target_label: cloud_account_id
+            replacement: "__CLOUD_ACCOUNT_ID__"
+          - target_label: region
+            replacement: __REGION__
+          - source_labels:
+              - __meta_kubernetes_node_label_topology_kubernetes_io_zone
+            target_label: availability_zone
+          - target_label: project
+            replacement: __PROJECT__
+          - target_label: environment
+            replacement: __ENVIRONMENT__
+          - target_label: platform
+            replacement: kubernetes
+          - target_label: cloud_service
+            replacement: __CLOUD_SERVICE__
+          - target_label: resource_type
+            replacement: k8s_node
+          - source_labels:
+              - __meta_kubernetes_node_name
+            target_label: resource_id
+          - source_labels:
+              - __meta_kubernetes_node_name
+            target_label: resource_name
+          - source_labels:
+              - __meta_kubernetes_node_name
+            target_label: node
+          - target_label: cluster_id
+            replacement: "__CLUSTER_ID__"
+          - target_label: cluster_name
+            replacement: "__CLUSTER_ID__"
+
+
+      - job_name: annotated-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_phase]
+            action: keep
+            regex: Running
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scheme]
+            action: replace
+            target_label: __scheme__
+            regex: (https?)
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            target_label: __address__
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+kind: ConfigMap
+metadata:
+  name: prometheus-agent-config
+  namespace: monitoring

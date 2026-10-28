@@ -1,0 +1,15 @@
+# Type
+- Infra    :SRE DevOps DevSecOps
+  - EKS
+  - Middleware
+  - ec2(consul)
+
+  Alert example: Infra_EKS_Metrics_[High/Low]
+
+- Business
+  - Api
+  - Service
+  - Business
+  - Infra
+
+  Alert example: RC_API_Metrics_[High/Low]

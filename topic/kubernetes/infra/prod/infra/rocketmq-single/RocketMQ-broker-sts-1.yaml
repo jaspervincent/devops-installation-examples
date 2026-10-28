@@ -1,0 +1,105 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-mq-broker-1
+  namespace: infra
+spec:
+  selector:
+    app: mq-broker-1
+  ports:
+    - name: tcp-10912
+      port: 10912
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mq-broker-1
+  namespace: infra
+spec:
+  serviceName: svc-mq-broker-1
+  selector:
+    matchLabels:
+      app: mq-broker-1
+  template:
+    metadata:
+      labels:
+        app: mq-broker-1
+        appgroup: broker
+    spec:
+      containers:
+        - name: mq-broker-1
+          image: gehuiwin/rocketmq:4.9.2
+          imagePullPolicy: IfNotPresent
+          env:
+          - name: JAVA_OPT_EXT
+            value: "-Duser.timezone=Asia/Calcutta -Duser.home=/home/rocketmq -Xms1g -Xmx1g -Xmn512m"
+          command:
+          - sh
+          - mqbroker
+          - -c
+          - /etc/rocketmq/broker.conf
+          resources:
+            limits:
+              cpu: "2"
+              memory: 5Gi
+            requests:
+              cpu: "500m"
+              memory: 1Gi
+          readinessProbe:
+            tcpSocket:
+              port: 10912
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+            successThreshold: 1
+          livenessProbe:
+            tcpSocket:
+              port: 10912
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+            successThreshold: 1
+          volumeMounts:
+            - mountPath: /etc/rocketmq/broker.conf
+              name: config
+              subPath: mq-broker-1.conf
+            - mountPath: /data
+              name: disk-ssd
+            - mountPath: /opt/store
+              name: disk-ssd
+              subPath: store
+      #nodeSelector:
+      #  type: infra
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: appgroup
+                    operator: In
+                    values:
+                      - broker
+              topologyKey: kubernetes.io/hostname
+      volumes:
+        - name: config
+          configMap:
+            name: cm-mq-broker
+            defaultMode: 420
+      securityContext:
+        runAsUser: 3000
+        fsGroup: 3000
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  volumeClaimTemplates:
+    - metadata:
+        name: disk-ssd
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: "gp3"
+        resources:
+          requests:
+            storage: 50Gi
