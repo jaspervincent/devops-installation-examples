@@ -84,19 +84,20 @@ data:
                               '$status $body_bytes_sent "$http_referer" '
                               '"$http_user_agent" "$http_x_forwarded_for"';
 
-        log_format access_json escape=json '{"@timestamp":"$time_iso8601",'
-                  '"host":"$server_addr",'
-                  '"clientip":"$remote_addr",'
-                  '"size":$body_bytes_sent,'
-                  '"responsetime":$request_time,'
-                  '"upstreamtime":"$upstream_response_time",'
-                  '"upstreamhost":"$upstream_addr",'
+        log_format access_json escape=json
+                  '{"@timestamp":"$time_iso8601",'
+                  '"server_addr":"$server_addr",'
+                  '"client_ip":"$remote_addr",'
+                  '"body_bytes_sent":$body_bytes_sent,'
+                  '"request_time":$request_time,'
+                  '"upstream_response_time":"$upstream_response_time",'
+                  '"upstream_addr":"$upstream_addr",'
                   '"host":"$host",'
-                  '"method":"$request_method",'
-                  '"uri":"$request_uri",'
+                  '"request_method":"$request_method",'
+                  '"request_uri":"$request_uri",'
                   '"proxy_uri":"$uri",'
-                  '"xff":"$http_x_forwarded_for",'
-                  '"referer":"$http_referer",'
+                  '"http_x_forwarded_for":"$http_x_forwarded_for",'
+                  '"http_referer":"$http_referer",'
                   '"http_user_agent":"$http_user_agent",'
                   '"status":"$status"}';
 
